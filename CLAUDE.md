@@ -10,7 +10,7 @@ Everything runs through Docker Compose; Go isn't required locally. Run the test 
 
 ## Before pushing or opening a PR
 
-1. Commit your work on a branch. Don't push yet.
+1. Commit your work on a branch. Branches must start with `feature/` or `bugfix/`. Don't push yet.
 2. Run the `code-reviewer` agent on the branch. It runs the CI checks on the changed packages and reviews the diff against `docs/conventions.md` and the API contract.
 3. Address the findings:
    - **blocker** — fix it.
