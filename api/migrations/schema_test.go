@@ -143,8 +143,28 @@ func TestSchemaConstraints(t *testing.T) {
 			code: checkViolation, constraint: "products_sku_format",
 		},
 		{
-			name: "product SKU can't use non-ASCII digits",
+			name: "product SKU can't have a leading newline",
+			sql:  `INSERT INTO products (sku, name) VALUES (E'\n123456', 'Another')`,
+			code: checkViolation, constraint: "products_sku_format",
+		},
+		{
+			name: "product SKU can't span two lines",
+			sql:  `INSERT INTO products (sku, name) VALUES (E'123456\n654321', 'Another')`,
+			code: checkViolation, constraint: "products_sku_format",
+		},
+		{
+			name: "product SKU can't have a sign",
+			sql:  `INSERT INTO products (sku, name) VALUES ('+12345', 'Another')`,
+			code: checkViolation, constraint: "products_sku_format",
+		},
+		{
+			name: "product SKU can't use fullwidth digits",
 			sql:  `INSERT INTO products (sku, name) VALUES ('１２３４５６', 'Another')`,
+			code: checkViolation, constraint: "products_sku_format",
+		},
+		{
+			name: "product SKU can't use Arabic-Indic digits",
+			sql:  `INSERT INTO products (sku, name) VALUES ('١٢٣٤٥٦', 'Another')`,
 			code: checkViolation, constraint: "products_sku_format",
 		},
 		{

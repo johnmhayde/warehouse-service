@@ -26,5 +26,6 @@ ALTER TABLE products ADD CONSTRAINT products_sku_format CHECK (sku ~ '^[0-9]{6}$
 -- Restores the previous format. Every six-digit SKU also matches it, so this
 -- can't fail on existing rows. The rows deleted by Up are not restored.
 ALTER TABLE products DROP CONSTRAINT products_sku_format;
--- Must match inventory.ParseSKU in the API.
+-- Restores the 00004 constraint. The API is not rolled back with it, so
+-- inventory.ParseSKU stays stricter than this.
 ALTER TABLE products ADD CONSTRAINT products_sku_format CHECK (sku ~ '^[A-Z0-9-]{1,64}$');

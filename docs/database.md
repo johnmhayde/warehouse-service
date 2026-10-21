@@ -176,7 +176,7 @@ users ──< stock_adjustments >── products
 | `active` | `boolean` | Default `true`; indexed |
 | `created_at`, `updated_at` | `timestamptz` | A trigger keeps `updated_at` current |
 
-**`stock_adjustments`**: the audit history of stock changes. Rows are only ever inserted.
+**`stock_adjustments`**: the audit history of stock changes. Rows are only ever inserted. Exception: migration 00006 deleted the history of products with non-conforming SKUs, together with those products ([ADR 0002](adr/0002-six-digit-skus.md)).
 
 | Column | Type | Notes |
 | ------ | ---- | ----- |
@@ -194,7 +194,7 @@ Conventions used throughout:
 
 - **Named constraints.** Every constraint has an explicit name (`<table>_<column>_<rule>`). The API can then map a violation to a specific error, and tests can check which rule fired.
 - **Check constraints instead of enum types** for small value sets like `role`, because a check constraint is easier to change later.
-- **`RESTRICT` on foreign keys.** Products and users with history are deactivated, never deleted, so the audit trail stays intact.
+- **`RESTRICT` on foreign keys.** Products and users with history are deactivated, never deleted, so the audit trail stays intact. Exception: migration 00006 deleted products with non-conforming SKUs and their history ([ADR 0002](adr/0002-six-digit-skus.md)).
 - **Constraint tests.** Each constraint has an integration test in `api/migrations/schema_test.go`.
 
 ## Writing a migration
