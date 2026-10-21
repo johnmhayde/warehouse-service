@@ -1,0 +1,186 @@
+openapi: 3.1.0
+info:
+  title: warehouse-service API
+  version: 1.0.0
+  description: |
+    HTTP API for the warehouse inventory service.
+
+    Public endpoints live under `/api/v1`. The infrastructure endpoints
+    `/healthz` and `/readyz` are not versioned.
+
+    The handlers in `api/internal/httpapi/v1` and `api/internal/health` are
+    the source of truth; this file describes them and must be updated in the
+    same change as any handler that alters the contract.
+
+    Requests that match no route get the standard library's plain-text
+    `404 page not found`, and a known path called with the wrong method gets a
+    plain-text `405 Method Not Allowed` with an `Allow` header. Neither is a
+    JSON error body.
+servers:
+  - url: /
+    description: Same origin as this document; locally the compose stack serves it on http://localhost:8080
+# The API has no authentication yet.
+security: []
+tags:
+  - name: items
+    description: Inventory items
+  - name: health
+    description: Liveness and readiness probes for container runtimes and load balancers
+paths:
+  /api/v1/items/{sku}:
+    get:
+      operationId: getItem
+      summary: Get an item by SKU
+      tags: [items]
+      parameters:
+        - $ref: '#/components/parameters/SKU'
+      responses:
+        '200':
+          description: The item.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Item'
+              example:
+                sku: '123456'
+                name: Pallet jack
+                quantity: 3
+        '400':
+          description: The SKU in the path is not a valid SKU.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error: invalid SKU
+        '404':
+          description: No item has this SKU.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error: item not found
+        '500':
+          description: The item could not be loaded. Internal details are logged, never returned.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error: internal error
+  /healthz:
+    get:
+      operationId: getLiveness
+      summary: Liveness probe
+      description: |
+        Returns 200 whenever the process can respond. It never checks
+        dependencies, so a database outage does not get healthy instances
+        restarted.
+      tags: [health]
+      responses:
+        '200':
+          description: The process is alive.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthStatus'
+              example:
+                status: ok
+  /readyz:
+    get:
+      operationId: getReadiness
+      summary: Readiness probe
+      description: |
+        Returns 200 when the instance should receive traffic. Returns 503
+        until startup finishes, once graceful shutdown begins, and whenever a
+        dependency check (currently `postgres`, a database ping) fails.
+        Dependency checks are capped at 2 seconds in total.
+      tags: [health]
+      responses:
+        '200':
+          description: Ready for traffic.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthStatus'
+              example:
+                status: ready
+        '503':
+          description: |
+            Not ready. `failed` names the dependency check that failed; it is
+            absent when the instance is starting up or shutting down. The
+            underlying error is only logged.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthStatus'
+              examples:
+                startingOrDraining:
+                  summary: Starting up or shutting down
+                  value:
+                    status: not ready
+                dependencyFailed:
+                  summary: A dependency check failed
+                  value:
+                    status: not ready
+                    failed: postgres
+components:
+  parameters:
+    SKU:
+      name: sku
+      in: path
+      required: true
+      description: SKU of the item.
+      schema:
+        $ref: '#/components/schemas/SKU'
+      example: '123456'
+  schemas:
+    SKU:
+      type: string
+      description: Stock keeping unit. Exactly 6 digits; leading zeros are significant.
+      pattern: '^[0-9]{6}$'
+      minLength: 6
+      maxLength: 6
+      examples:
+        - '123456'
+        - '004210'
+    Item:
+      type: object
+      additionalProperties: false
+      required: [sku, name, quantity]
+      properties:
+        sku:
+          $ref: '#/components/schemas/SKU'
+        name:
+          type: string
+          description: Display name of the item.
+          examples:
+            - Pallet jack
+        quantity:
+          type: integer
+          description: Units on hand.
+          examples:
+            - 3
+    Error:
+      type: object
+      additionalProperties: false
+      required: [error]
+      properties:
+        error:
+          type: string
+          description: Short, client-safe description of what went wrong.
+    HealthStatus:
+      type: object
+      additionalProperties: false
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [ok, ready, not ready]
+          description: '`ok` from /healthz; `ready` or `not ready` from /readyz.'
+        failed:
+          type: string
+          description: Name of the dependency check that failed. Only present on a 503 from /readyz caused by a failing check.
+          examples:
+            - postgres

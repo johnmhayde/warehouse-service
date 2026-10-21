@@ -97,7 +97,7 @@ curl localhost:8080/readyz
 docker compose run --rm test       # unit + integration tests
 ```
 
-See [docs/database.md](docs/database.md) for migrations and database configuration, and [docs/conventions.md](docs/conventions.md) for how the code is organized.
+The HTTP API is described in [api/openapi.yaml](api/openapi.yaml). See [docs/database.md](docs/database.md) for migrations and database configuration, and [docs/conventions.md](docs/conventions.md) for how the code is organized.
 
 ## Status
 
