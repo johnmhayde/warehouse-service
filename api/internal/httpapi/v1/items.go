@@ -1,9 +1,9 @@
 package v1
 
 import (
+	"encoding/json"
 	"errors"
 	"net/http"
-	"encoding/json"
 
 	"github.com/johnmhayde/warehouse-service/api/internal/inventory"
 )

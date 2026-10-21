@@ -12,8 +12,8 @@ import (
 
 	"github.com/johnmhayde/warehouse-service/api/internal/config"
 	"github.com/johnmhayde/warehouse-service/api/internal/health"
-	"github.com/johnmhayde/warehouse-service/api/internal/server"
 	"github.com/johnmhayde/warehouse-service/api/internal/inventory"
+	"github.com/johnmhayde/warehouse-service/api/internal/server"
 	"github.com/johnmhayde/warehouse-service/api/internal/store/memory"
 )
 
@@ -48,7 +48,7 @@ func run(ctx context.Context, getenv func(string) string, stdout io.Writer) erro
 	logger := slog.New(slog.NewJSONHandler(stdout, &slog.HandlerOptions{Level: cfg.LogLevel}))
 
 	store := memory.New(
-        inventory.Item{SKU: "000123", Name: "Pallet jack", Quantity: 140},
+		inventory.Item{SKU: "000123", Name: "Pallet jack", Quantity: 140},
 	)
 	items := inventory.NewService(store)
 

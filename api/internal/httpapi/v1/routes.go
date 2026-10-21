@@ -18,11 +18,11 @@ const Prefix = "/api/v1"
 
 // ItemService is what the v1 handlers need from the inventory domain.
 type ItemService interface {
-    GetItem(ctx context.Context, sku inventory.SKU) (inventory.Item, error)
+	GetItem(ctx context.Context, sku inventory.SKU) (inventory.Item, error)
 }
 
 type handler struct {
-    items ItemService
+	items ItemService
 }
 
 // Register mounts the v1 routes on mux. Use full method + path patterns

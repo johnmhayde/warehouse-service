@@ -4,7 +4,7 @@ package memory
 import (
 	"context"
 	"sync"
-	
+
 	"github.com/johnmhayde/warehouse-service/api/internal/inventory"
 )
 
