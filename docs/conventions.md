@@ -51,6 +51,7 @@ Rules:
 - **Dependencies point inward.** Domain packages (`inventory`, `movement`) define the interfaces they need (for example `inventory.Repository`) and import neither `net/http` nor a database driver. `store/*` implements those interfaces, and `httpapi/*` calls the domain.
 - **Wiring is explicit.** Dependencies are built in `cmd/api` (`run`) and passed in through constructors. There are no package-level globals and no DI framework.
 - **`main` stays small.** It sets up signal handling and calls `run(ctx, getenv, stdout) error`, and every input to `run` is a parameter so it can be tested.
+- **Architecture rules are enforced by go-arch-lint.** The import rules above are encoded in [`api/.go-arch-lint.yml`](../api/.go-arch-lint.yml) and checked in CI. Run it from `api/` with `go run github.com/fe3dback/go-arch-lint@v1.19.0 check`, or without a local Go install with `docker compose run --rm --no-deps test go run github.com/fe3dback/go-arch-lint@v1.19.0 check`. A new package under `api/` must be added as a component (the check fails on unmapped files), and each new domain package gets its own component so domains can't import each other. go-arch-lint doesn't check standard-library imports, so "no `net/http` or `database/sql` in domain packages" is still enforced by review. `_test.go` files are not checked; that is what keeps `pgtest` test-only, since no component may import it.
 
 ## HTTP
 
