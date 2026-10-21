@@ -1,0 +1,100 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  api:
+    name: API tests and migrations
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: api
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: warehouse
+          POSTGRES_USER: warehouse
+          POSTGRES_PASSWORD: warehouse
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U warehouse -d warehouse"
+          --health-interval 2s
+          --health-timeout 2s
+          --health-retries 30
+    env:
+      # Integration tests create and drop their own databases here.
+      TEST_DATABASE_URL: postgres://warehouse:warehouse@localhost:5432/warehouse?sslmode=disable
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: api/go.mod
+          cache-dependency-path: api/go.sum
+
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "::error::These files need gofmt:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: Unit and integration tests
+        run: go test -count=1 ./...
+
+      # The tests above already cover both paths. These two steps run them
+      # by name so each acceptance criterion has its own line in the CI log.
+      - name: Migrations apply to an empty database
+        run: go test -count=1 -run 'TestUpFromEmpty|TestDownAndUpAgain' -v ./migrations
+
+      - name: Latest migration applies on top of the previous version
+        run: go test -count=1 -run 'TestLatestOnPrevious' -v ./migrations
+
+      - name: migrate CLI against a fresh database
+        env:
+          DB_HOST: localhost
+          DB_NAME: migrate_cli
+          DB_USER: warehouse
+          DB_PASSWORD: warehouse
+          DB_SSLMODE: disable
+        run: |
+          docker exec ${{ job.services.postgres.id }} createdb -U warehouse migrate_cli
+          go run ./cmd/migrate up
+          go run ./cmd/migrate status
+
+  migrations-immutable:
+    name: Merged migrations are unchanged
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Reject edits to merged migrations
+        run: |
+          changed=$(git diff --name-only --diff-filter=MDR "origin/${{ github.base_ref }}...HEAD" -- 'api/migrations/*.sql')
+          if [ -n "$changed" ]; then
+            echo "::error::Migrations that are already merged must not be edited, renamed or deleted. Add a new migration instead:"
+            echo "$changed"
+            exit 1
+          fi
+
+  images:
+    name: Docker images build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build api image
+        run: docker build --target api -t warehouse-api ./api
+      - name: Build migrate image
+        run: docker build --target migrate -t warehouse-migrate ./api
