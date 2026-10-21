@@ -48,7 +48,7 @@ func withFixture(t *testing.T, pool *pgxpool.Pool, fn func(ctx context.Context, 
 		t.Fatalf("insert fixture user: %v", err)
 	}
 	if err := tx.QueryRow(ctx,
-		`INSERT INTO products (sku, name, category, total_quantity) VALUES ('FIX-1', 'Fixture pallet jack', 'equipment', 10) RETURNING id`,
+		`INSERT INTO products (sku, name, category, total_quantity) VALUES ('100001', 'Fixture pallet jack', 'equipment', 10) RETURNING id`,
 	).Scan(&f.productID); err != nil {
 		t.Fatalf("insert fixture product: %v", err)
 	}
@@ -114,22 +114,47 @@ func TestSchemaConstraints(t *testing.T) {
 		// products
 		{
 			name: "product SKU is unique",
-			sql:  `INSERT INTO products (sku, name) VALUES ('FIX-1', 'Another')`,
+			sql:  `INSERT INTO products (sku, name) VALUES ('100001', 'Another')`,
 			code: uniqueViolation, constraint: "products_sku_key",
 		},
 		{
-			name: "product SKU must match the SKU format",
-			sql:  `INSERT INTO products (sku, name) VALUES ('fix 2', 'Another')`,
+			name: "product SKU can't have five digits",
+			sql:  `INSERT INTO products (sku, name) VALUES ('12345', 'Another')`,
+			code: checkViolation, constraint: "products_sku_format",
+		},
+		{
+			name: "product SKU can't have seven digits",
+			sql:  `INSERT INTO products (sku, name) VALUES ('1234567', 'Another')`,
+			code: checkViolation, constraint: "products_sku_format",
+		},
+		{
+			name: "product SKU can't use the old format",
+			sql:  `INSERT INTO products (sku, name) VALUES ('SKU-00921', 'Another')`,
+			code: checkViolation, constraint: "products_sku_format",
+		},
+		{
+			name: "product SKU can't contain letters",
+			sql:  `INSERT INTO products (sku, name) VALUES ('12345a', 'Another')`,
+			code: checkViolation, constraint: "products_sku_format",
+		},
+		{
+			name: "product SKU can't have a trailing newline",
+			sql:  `INSERT INTO products (sku, name) VALUES (E'123456\n', 'Another')`,
+			code: checkViolation, constraint: "products_sku_format",
+		},
+		{
+			name: "product SKU can't use non-ASCII digits",
+			sql:  `INSERT INTO products (sku, name) VALUES ('１２３４５６', 'Another')`,
 			code: checkViolation, constraint: "products_sku_format",
 		},
 		{
 			name: "product name can't be blank",
-			sql:  `INSERT INTO products (sku, name) VALUES ('FIX-2', '')`,
+			sql:  `INSERT INTO products (sku, name) VALUES ('100002', '')`,
 			code: checkViolation, constraint: "products_name_not_blank",
 		},
 		{
 			name: "product category can't be blank",
-			sql:  `INSERT INTO products (sku, name, category) VALUES ('FIX-2', 'Another', ' ')`,
+			sql:  `INSERT INTO products (sku, name, category) VALUES ('100002', 'Another', ' ')`,
 			code: checkViolation, constraint: "products_category_not_blank",
 		},
 		{
@@ -140,7 +165,7 @@ func TestSchemaConstraints(t *testing.T) {
 		},
 		{
 			name: "product reorder threshold can't be negative",
-			sql:  `INSERT INTO products (sku, name, reorder_threshold) VALUES ('FIX-2', 'Another', -5)`,
+			sql:  `INSERT INTO products (sku, name, reorder_threshold) VALUES ('100002', 'Another', -5)`,
 			code: checkViolation, constraint: "products_reorder_threshold_nonnegative",
 		},
 
@@ -228,9 +253,9 @@ func TestSchemaAcceptsValidRows(t *testing.T) {
 			{"an admin user",
 				`INSERT INTO users (email, display_name, role) VALUES ('admin@example.com', 'Admin', 'admin')`},
 			{"an uncategorized product with no threshold",
-				`INSERT INTO products (sku, name) VALUES ('SKU-00921', 'Hand truck')`},
-			{"a product at zero stock",
-				`INSERT INTO products (sku, name, total_quantity, reorder_threshold) VALUES ('SKU-00922', 'Dolly', 0, 0)`},
+				`INSERT INTO products (sku, name) VALUES ('123456', 'Hand truck')`},
+			{"a product whose SKU has leading zeros, at zero stock",
+				`INSERT INTO products (sku, name, total_quantity, reorder_threshold) VALUES ('000001', 'Dolly', 0, 0)`},
 		}
 		for _, v := range valid {
 			if _, err := tx.Exec(ctx, v.sql); err != nil {

@@ -52,7 +52,7 @@ A wide event is a single structured record emitted once per unit of work (for ex
   "user.id": "u_1842",
   "warehouse.id": "wh_east",
   "movement.type": "transfer",
-  "sku": "SKU-00921",
+  "sku": "123456",
   "quantity": 12,
   "location.from": "A-04-02",
   "location.to": "C-11-01",

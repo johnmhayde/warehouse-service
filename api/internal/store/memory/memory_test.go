@@ -12,10 +12,10 @@ import (
 var _ inventory.Repository = (*Store)(nil)
 
 func TestGetItemFound(t *testing.T) {
-	want := inventory.Item{SKU: "SKU-1", Name: "Pallet jack", Quantity: 3}
+	want := inventory.Item{SKU: "123456", Name: "Pallet jack", Quantity: 3}
 	s := New(want)
 
-	got, err := s.GetItem(context.Background(), "SKU-1")
+	got, err := s.GetItem(context.Background(), "123456")
 	if err != nil {
 		t.Fatalf("GetItem: %v", err)
 	}
@@ -25,9 +25,9 @@ func TestGetItemFound(t *testing.T) {
 }
 
 func TestGetItemNotFound(t *testing.T) {
-	s := New(inventory.Item{SKU: "SKU-1"})
+	s := New(inventory.Item{SKU: "123456"})
 
-	_, err := s.GetItem(context.Background(), "SKU-2")
+	_, err := s.GetItem(context.Background(), "654321")
 	if !errors.Is(err, inventory.ErrNotFound) {
 		t.Errorf("GetItem error = %v, want ErrNotFound", err)
 	}

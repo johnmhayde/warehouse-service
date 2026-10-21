@@ -167,7 +167,7 @@ users ──< stock_adjustments >── products
 | Column | Type | Notes |
 | ------ | ---- | ----- |
 | `id` | `bigint` identity | Primary key |
-| `sku` | `text` | Unique; `^[A-Z0-9-]{1,64}$`, the same rule as `inventory.ParseSKU` |
+| `sku` | `text` | Unique; exactly six ASCII digits (`^[0-9]{6}$`, leading zeros allowed), the same rule as `inventory.ParseSKU` ([ADR 0002](adr/0002-six-digit-skus.md)) |
 | `name` | `text` | Non-blank; trigram-indexed for `ILIKE '%term%'` search |
 | `description` | `text` | Default `''` |
 | `category` | `text`, nullable | NULL means uncategorized; indexed |
@@ -199,7 +199,7 @@ Conventions used throughout:
 
 ## Writing a migration
 
-1. Add the next numbered file to `api/migrations/`, e.g. `00006_add_product_unit.sql`:
+1. Add the next numbered file to `api/migrations/`, e.g. `00007_add_product_unit.sql`:
    ```sql
    -- +goose Up
    ALTER TABLE products ADD COLUMN unit text NOT NULL DEFAULT 'each';
