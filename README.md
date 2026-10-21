@@ -87,6 +87,18 @@ warehouse-service/
 └── README.md
 ```
 
+## Running locally
+
+You need Docker. Go is optional.
+
+```sh
+docker compose up --build          # Postgres, then migrations, then the API on :8080
+curl localhost:8080/readyz
+docker compose run --rm test       # unit + integration tests
+```
+
+See [docs/database.md](docs/database.md) for migrations and database configuration, and [docs/conventions.md](docs/conventions.md) for how the code is organized.
+
 ## Status
 
-Early stage: the project is being scaffolded. Setup and run instructions will be added as the frontend and backend are built.
+Early stage: the project is being scaffolded. The API and its database foundation are in place; the frontend hasn't been started.

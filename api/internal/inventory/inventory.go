@@ -29,25 +29,25 @@ type Item struct {
 }
 
 var (
-    ErrNotFound   = errors.New("item not found")
-    ErrInvalidSKU = errors.New("invalid SKU")
+	ErrNotFound   = errors.New("item not found")
+	ErrInvalidSKU = errors.New("invalid SKU")
 )
 
 // Repository is what the inventory domain needs from storage. The domain
 // defines it; store packages implement it
 type Repository interface {
-     GetItem(ctx context.Context, sku SKU) (Item, error)
+	GetItem(ctx context.Context, sku SKU) (Item, error)
 }
 
 // Service holds the inventory business logic.
 type Service struct {
-    repo Repository
+	repo Repository
 }
 
 func NewService(repo Repository) *Service {
-    return &Service{repo: repo}
+	return &Service{repo: repo}
 }
 
 func (s *Service) GetItem(ctx context.Context, sku SKU) (Item, error) {
-    return s.repo.GetItem(ctx, sku)
+	return s.repo.GetItem(ctx, sku)
 }

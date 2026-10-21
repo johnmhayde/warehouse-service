@@ -17,10 +17,13 @@ type Config struct {
 	// ShutdownTimeout bounds how long in-flight requests get to finish
 	// after a shutdown signal (API_SHUTDOWN_TIMEOUT).
 	ShutdownTimeout time.Duration
+	// Database is the PostgreSQL connection (DB_*).
+	Database Database
 }
 
 // Load reads the configuration using getenv, applying defaults for unset
-// variables. It returns an error if any value is present but invalid.
+// variables. It returns an error if any value is present but invalid, or if
+// a required value is missing.
 func Load(getenv func(string) string) (Config, error) {
 	cfg := Config{
 		Addr:            ":8080",
@@ -48,6 +51,12 @@ func Load(getenv func(string) string) (Config, error) {
 		}
 		cfg.ShutdownTimeout = d
 	}
+
+	db, err := LoadDatabase(getenv)
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.Database = db
 
 	return cfg, nil
 }

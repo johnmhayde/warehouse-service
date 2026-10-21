@@ -1,11 +1,83 @@
+# Local development stack. Credentials here are for local use only; in
+# deployed environments they come from Kubernetes Secrets (docs/database.md).
+
+x-db-env: &db-env
+  DB_HOST: postgres
+  DB_PORT: "5432"
+  DB_NAME: warehouse
+  DB_USER: warehouse
+  DB_PASSWORD: warehouse
+  DB_SSLMODE: disable
+
 services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: warehouse
+      POSTGRES_USER: warehouse
+      POSTGRES_PASSWORD: warehouse
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "warehouse", "-d", "warehouse"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+
+  # One-shot migration step. `docker compose up` runs it to completion
+  # before starting the API; run it on its own with
+  # `docker compose run --rm --build migrate <command>`.
+  migrate:
+    build:
+      context: ./api
+      target: migrate
+    command: ["up"]
+    environment: *db-env
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
   api:
     build:
       context: ./api
+      target: api
     ports:
       - "8080:8080"
     environment:
+      <<: *db-env
       API_ADDR: ":8080"
       API_LOG_LEVEL: debug
       API_SHUTDOWN_TIMEOUT: 5s
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
 
+  # Go toolchain for running tests without installing Go. Not started by
+  # `up` (it's behind a profile):
+  #   docker compose run --rm test                     unit + integration tests
+  #   docker compose run --rm test go test ./migrations
+  test:
+    profiles: [tools]
+    image: golang:1.26-alpine
+    working_dir: /src
+    command: ["go", "test", "-count=1", "./..."]
+    environment:
+      # Integration tests create and drop their own databases here.
+      TEST_DATABASE_URL: postgres://warehouse:warehouse@postgres:5432/warehouse?sslmode=disable
+    volumes:
+      - ./api:/src
+      - gomodcache:/go/pkg/mod
+      - gobuildcache:/root/.cache/go-build
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  gomodcache:
+  gobuildcache:
+  pgdata:
