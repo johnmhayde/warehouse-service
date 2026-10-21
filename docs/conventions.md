@@ -9,14 +9,17 @@ warehouse-service/
 ├── api/          # Go inventory API (its own Go module)
 ├── web/          # TypeScript frontend
 ├── deploy/       # deployment config beyond local compose
-├── docs/         # project documentation (this file)
-└── compose.yml   # local development stack
+├── docs/         # project documentation (this file, database.md, adr/)
+├── .github/      # CI workflows
+└── compose.yml   # local development stack (Postgres, migrate, API, test runner)
 ```
+
+Architecture decisions are recorded as numbered ADRs in `docs/adr/`.
 
 ## Go module
 
 - There is one module, rooted at `api/`: `github.com/johnmhayde/warehouse-service/api`.
-- Run Go commands from `api/` (`go run ./cmd/api`, `go test ./...`).
+- Run Go commands from `api/` (`go test ./...`, `go run ./cmd/migrate status`), or through compose (`docker compose run --rm test`).
 - Don't add a `go.work` file unless a second Go module is added.
 - The module path never gets a `/vN` suffix. That is for libraries other code imports, and nothing imports this service.
 
@@ -24,15 +27,20 @@ warehouse-service/
 
 ```
 api/
-├── cmd/api/              # main package: wiring only, no business logic
+├── cmd/
+│   ├── api/              # main package: wiring only, no business logic
+│   └── migrate/          # applies migrations; its own image, never run by the API
+├── migrations/           # goose SQL migrations, embedded into cmd/migrate
 └── internal/
     ├── config/           # environment variables → Config
     ├── server/           # http.Server, middleware, lifecycle
-    ├── health/           # /healthz, /readyz
+    ├── health/           # /healthz, /readyz (+ dependency checks)
     ├── httpapi/v1/       # v1 handlers and request/response DTOs
-    ├── inventory/        # (planned) domain: items, SKUs, stock levels
+    ├── inventory/        # domain: items, SKUs, stock levels
     ├── movement/         # (planned) domain: receiving, picking, transfers, adjustments
-    ├── store/postgres/   # (planned) implementations of domain repositories
+    ├── store/memory/     # in-memory repositories for development and tests
+    ├── store/postgres/   # connection pool; Postgres implementations of domain repositories
+    ├── pgtest/           # throwaway databases for integration tests
     └── telemetry/        # (planned) wide-event builder and middleware
 ```
 
@@ -61,6 +69,9 @@ Configuration comes only from environment variables, which are read once at star
 | `API_ADDR`             | `:8080` | Listen address                                  |
 | `API_LOG_LEVEL`        | `info`  | `debug`, `info`, `warn` or `error`              |
 | `API_SHUTDOWN_TIMEOUT` | `15s`   | Maximum time in-flight requests get to drain    |
+| `DB_*`                 |         | PostgreSQL connection; see [database.md](database.md#configuration) |
+
+Secrets (currently just `DB_PASSWORD`) are injected from Kubernetes Secrets as environment variables. Config types that hold secrets implement `String` and `slog.LogValuer` so the secret can't end up in logs.
 
 ## Lifecycle
 
@@ -81,4 +92,10 @@ Configuration comes only from environment variables, which are read once at star
 
 - Tests sit next to the code they test (`foo.go` / `foo_test.go`).
 - Use `net/http/httptest` for handlers, and table-driven tests where cases vary only by input.
-- `go test ./...` from `api/` must pass before merging.
+- Integration tests that need Postgres use `internal/pgtest`. They skip unless `TEST_DATABASE_URL` is set, so `go test ./...` works without a database.
+- `docker compose run --rm test` runs unit and integration tests against the compose Postgres, without a local Go install.
+- CI (`.github/workflows/ci.yml`) runs gofmt, vet, and the full suite against Postgres on every PR. It must pass before merging.
+
+## Database
+
+See [database.md](database.md) for configuration, connection mode, secrets and how to write migrations. Migrations run as a dedicated step, never at API startup ([ADR 0001](adr/0001-database-migrations.md)).
