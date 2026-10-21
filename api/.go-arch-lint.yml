@@ -1,0 +1,99 @@
+# Architecture rules for the API module, checked by go-arch-lint
+# (https://github.com/fe3dback/go-arch-lint). They encode the "API package
+# layout" rules in docs/conventions.md.
+#
+# Run from api/ (CI pins the same version):
+#   go run github.com/fe3dback/go-arch-lint@v1.19.0 check
+# or without a local Go install, from the repo root:
+#   docker compose run --rm test go run github.com/fe3dback/go-arch-lint@v1.19.0 check
+#
+# Limits of the tool (see docs/conventions.md):
+# - Standard-library imports are never checked, so "domain packages don't
+#   import net/http or database/sql" is NOT enforced here.
+# - Test files are excluded below. That is what makes pgtest test-only: no
+#   component may depend on it, so any non-test import of pgtest fails.
+version: 3
+
+allow:
+  # Every third-party import must be granted per component via canUse.
+  depOnAnyVendor: false
+  # movement and telemetry are planned and don't exist yet; their rules are
+  # declared now so they apply as soon as the packages are added.
+  ignoreNotFoundComponents: true
+  # The conventions are import rules. deepScan also treats passing a value
+  # into another component's function as a dependency, so it reports the
+  # constructor injection in cmd/api (inventory.NewService(store)) as
+  # "inventory depends on store" - the dependency inversion the conventions
+  # ask for. Check imports only.
+  deepScan: false
+
+excludeFiles:
+  - "^.*_test\\.go$"
+
+vendors:
+  pgx: { in: [github.com/jackc/pgx/v5, github.com/jackc/pgx/v5/**] }
+  goose: { in: [github.com/pressly/goose/v3, github.com/pressly/goose/v3/**] }
+
+components:
+  # Wiring.
+  cmd-api: { in: cmd/api }
+  cmd-migrate: { in: cmd/migrate }
+
+  # Infrastructure.
+  config: { in: internal/config }
+  server: { in: internal/server }
+  health: { in: internal/health }
+  telemetry: { in: internal/telemetry/** } # planned
+  migrations: { in: migrations }
+  pgtest: { in: internal/pgtest }
+
+  # Domain packages. One component each so they can't import one another;
+  # a new domain package gets its own component here.
+  inventory: { in: internal/inventory/** }
+  movement: { in: internal/movement/** } # planned
+
+  # Adapters around the domain.
+  httpapi: { in: internal/httpapi/** }
+  store-memory: { in: internal/store/memory/** }
+  store-postgres: { in: internal/store/postgres/** }
+
+deps:
+  # cmd/api builds every dependency and passes it in: it may use anything.
+  cmd-api:
+    anyProjectDeps: true
+    anyVendorDeps: true
+
+  cmd-migrate:
+    mayDependOn: [config, migrations]
+    canUse: [pgx, goose]
+
+  migrations:
+    canUse: [goose]
+
+  # Test-only helper (it imports "testing"). Nothing may depend on it outside
+  # _test.go files, which are excluded above.
+  pgtest:
+    mayDependOn: [migrations]
+    canUse: [pgx, goose]
+
+  # config, health and telemetry are leaves: no project or vendor deps.
+  # Components without an entry in deps may not depend on anything.
+
+  server:
+    mayDependOn: [config, health, httpapi, telemetry]
+
+  # Domain packages (inventory, movement) are deliberately absent: they may
+  # not import any other project package (store/*, httpapi/*, server,
+  # config, each other) or any vendor code (in particular no DB driver/pool).
+
+  # httpapi calls the domain; never store/* or a DB driver.
+  httpapi:
+    mayDependOn: [inventory, movement]
+
+  # store/* implements domain interfaces; never httpapi/* or server.
+  store-memory:
+    mayDependOn: [inventory, movement]
+
+  store-postgres:
+    mayDependOn: [inventory, movement]
+    canUse: [pgx]

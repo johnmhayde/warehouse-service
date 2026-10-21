@@ -72,6 +72,24 @@ jobs:
           go run ./cmd/migrate up
           go run ./cmd/migrate status
 
+  arch-lint:
+    name: Architecture rules
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: api
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: api/go.mod
+          cache-dependency-path: api/go.sum
+
+      # Rules live in api/.go-arch-lint.yml (see docs/conventions.md).
+      - name: go-arch-lint
+        run: go run github.com/fe3dback/go-arch-lint@v1.19.0 check --output-color=false
+
   migrations-immutable:
     name: Merged migrations are unchanged
     if: github.event_name == 'pull_request'
