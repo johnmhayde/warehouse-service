@@ -94,7 +94,7 @@ You need Docker. Go is optional.
 ```sh
 docker compose up --build          # Postgres, then migrations, then the API on :8080
 curl localhost:8080/readyz
-docker compose run --rm seed       # optional: local sample users and products
+docker compose run --rm --build seed  # optional: local sample data (psql only; the API still serves items from memory)
 docker compose run --rm test       # unit + integration tests
 ```
 

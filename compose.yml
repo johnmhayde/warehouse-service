@@ -60,7 +60,7 @@ services:
   # Local-only sample data (dev/seed/seed.sql): 3 users and 20 products with
   # opening stock. Not started by `up` (it's behind a profile), so the stack
   # starts empty unless you ask for data:
-  #   docker compose run --rm seed
+  #   docker compose run --rm --build seed
   # Safe to re-run: existing rows are left alone. Uses stock psql, so the SQL
   # is never in the API or migrate images.
   seed:
