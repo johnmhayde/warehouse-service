@@ -15,6 +15,7 @@ import (
 	"github.com/johnmhayde/warehouse-service/api/internal/inventory"
 	"github.com/johnmhayde/warehouse-service/api/internal/server"
 	"github.com/johnmhayde/warehouse-service/api/internal/store/memory"
+	"github.com/johnmhayde/warehouse-service/api/internal/store/postgres"
 )
 
 func main() {
@@ -46,12 +47,25 @@ func run(ctx context.Context, getenv func(string) string, stdout io.Writer) erro
 	}
 
 	logger := slog.New(slog.NewJSONHandler(stdout, &slog.HandlerOptions{Level: cfg.LogLevel}))
+	logger.Info("config loaded", "db", cfg.Database)
 
+	pool, err := postgres.NewPool(ctx, cfg.Database.ConnString(), "warehouse-api")
+	if err != nil {
+		return err
+	}
+	// Deferred, so the pool closes only after the server has drained.
+	defer pool.Close()
+
+	hc := health.New(logger)
+	hc.AddCheck("postgres", pool.Ping)
+
+	// Items are still served from memory. A products repository built on
+	// the pool replaces this in WHS-305.
 	store := memory.New(
 		inventory.Item{SKU: "000123", Name: "Pallet jack", Quantity: 140},
 	)
 	items := inventory.NewService(store)
 
-	srv := server.New(cfg, logger, health.New(), items)
+	srv := server.New(cfg, logger, hc, items)
 	return srv.Run(ctx)
 }
