@@ -134,12 +134,29 @@ Everything runs through `docker compose`. You don't need Go installed.
 | Apply pending migrations | `docker compose run --rm --build migrate up` |
 | Roll back the latest migration | `docker compose run --rm --build migrate down` |
 | Show migration status | `docker compose run --rm --build migrate status` |
+| Load local sample data | `docker compose run --rm seed` |
 | Run unit and integration tests | `docker compose run --rm test` |
 | Run one package's tests | `docker compose run --rm test go test ./migrations` |
 | Open psql | `docker compose exec postgres psql -U warehouse` |
 | Wipe the local database | `docker compose down -v` |
 
 `migrate` also accepts `up-to V`, `down-to V` and `version`. Run it with no arguments to see the usage.
+
+### Seed data
+
+`docker compose run --rm seed` fills the local database with sample data. It's **local only**:
+
+- It's not a migration. The SQL lives in `dev/seed/seed.sql`, outside `api/`, so it's never embedded in the `migrate` binary or copied into any image, and CI never runs it.
+- The `seed` service runs that file with the stock `postgres:17-alpine` image's `psql`, using the same `DB_*` credentials as the rest of the compose stack. It runs with `ON_ERROR_STOP=1` in a single transaction, so it applies completely or not at all.
+- `docker compose up` doesn't run it (it's behind the `seed` profile), and the API doesn't depend on it, so the stack starts with an empty database unless you ask for data. `run --rm seed` starts Postgres and applies migrations first.
+
+It inserts:
+
+- 3 users with `@example.com` addresses: `admin@example.com` (admin), `robin@example.com` and `casey@example.com` (requesters).
+- 20 products with 6-digit SKUs (`100101`–`700701`) across a few categories (one uncategorized), some below their reorder threshold and two out of stock.
+- One `stock_adjustments` row per product that starts with stock ("Opening stock (local seed data)", by the admin), so each product's `total_quantity` equals the sum of its adjustments, as the schema requires.
+
+It's safe to re-run. Every insert uses `ON CONFLICT DO NOTHING`, and opening-stock adjustments are only written for products that the same run actually inserted. A re-run, or a seed SKU you've already created yourself, adds nothing and doesn't change existing stock. psql's `INSERT 0 n` output shows how many rows were added: users first, then stock adjustments. To start over, wipe the database (`docker compose down -v`) and run migrations and the seed again.
 
 ## Schema
 

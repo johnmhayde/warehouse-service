@@ -57,6 +57,33 @@ services:
       migrate:
         condition: service_completed_successfully
 
+  # Local-only sample data (dev/seed/seed.sql): 3 users and 20 products with
+  # opening stock. Not started by `up` (it's behind a profile), so the stack
+  # starts empty unless you ask for data:
+  #   docker compose run --rm seed
+  # Safe to re-run: existing rows are left alone. Uses stock psql, so the SQL
+  # is never in the API or migrate images.
+  seed:
+    profiles: [seed]
+    image: postgres:17-alpine
+    environment:
+      <<: *db-env
+      PGAPPNAME: warehouse-seed
+    entrypoint: ["sh", "-c"]
+    command:
+      - >-
+        PGHOST="$$DB_HOST" PGPORT="$$DB_PORT" PGDATABASE="$$DB_NAME"
+        PGUSER="$$DB_USER" PGPASSWORD="$$DB_PASSWORD" PGSSLMODE="$$DB_SSLMODE"
+        exec psql -v ON_ERROR_STOP=1 --single-transaction --no-psqlrc -f /seed/seed.sql
+    volumes:
+      - ./dev/seed:/seed:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    restart: "no"
+
   # Go toolchain for running tests without installing Go. Not started by
   # `up` (it's behind a profile):
   #   docker compose run --rm test                     unit + integration tests

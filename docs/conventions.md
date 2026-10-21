@@ -9,6 +9,7 @@ warehouse-service/
 ├── api/          # Go inventory API (its own Go module)
 ├── web/          # TypeScript frontend
 ├── deploy/       # deployment config beyond local compose
+├── dev/          # local-only development assets (seed data); never in images
 ├── docs/         # project documentation (this file, database.md, adr/)
 ├── .github/      # CI workflows
 └── compose.yml   # local development stack (Postgres, migrate, API, test runner)
