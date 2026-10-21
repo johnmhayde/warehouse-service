@@ -141,15 +141,71 @@ Everything runs through `docker compose`. You don't need Go installed.
 
 `migrate` also accepts `up-to V`, `down-to V` and `version`. Run it with no arguments to see the usage.
 
+## Schema
+
+The migrations in `api/migrations/` are the source of truth. This section is a map of them.
+
+```
+users ──< stock_adjustments >── products
+ (actor_id)                    (product_id)
+```
+
+**`users`**: people who request or manage stock.
+
+| Column | Type | Notes |
+| ------ | ---- | ----- |
+| `id` | `bigint` identity | Primary key |
+| `external_subject` | `text`, nullable | Identity-provider subject. NULL until auth (EP07); unique and non-blank once set |
+| `email` | `text` | Unique **case-insensitively** (`users_email_key` on `lower(email)`); must contain one `@` |
+| `display_name` | `text` | Non-blank |
+| `role` | `text` | `requester` (default) or `admin` |
+| `active` | `boolean` | Default `true`. Deactivate users rather than deleting them |
+| `created_at`, `updated_at` | `timestamptz` | A trigger keeps `updated_at` current |
+
+**`products`**: the catalog, and current stock on hand.
+
+| Column | Type | Notes |
+| ------ | ---- | ----- |
+| `id` | `bigint` identity | Primary key |
+| `sku` | `text` | Unique; `^[A-Z0-9-]{1,64}$`, the same rule as `inventory.ParseSKU` |
+| `name` | `text` | Non-blank; trigram-indexed for `ILIKE '%term%'` search |
+| `description` | `text` | Default `''` |
+| `category` | `text`, nullable | NULL means uncategorized; indexed |
+| `total_quantity` | `integer` | `>= 0`, default 0. Change it only together with a `stock_adjustments` row, in the same transaction |
+| `reorder_threshold` | `integer`, nullable | `>= 0`. Stock below it counts as low |
+| `active` | `boolean` | Default `true`; indexed |
+| `created_at`, `updated_at` | `timestamptz` | A trigger keeps `updated_at` current |
+
+**`stock_adjustments`**: the audit history of stock changes. Rows are only ever inserted.
+
+| Column | Type | Notes |
+| ------ | ---- | ----- |
+| `id` | `bigint` identity | Primary key |
+| `product_id` | `bigint` | → `products.id`, `ON DELETE RESTRICT` |
+| `delta` | `integer` | Signed change; never 0 |
+| `quantity_after` | `integer` | `products.total_quantity` after the change; `>= 0` |
+| `reason` | `text` | Non-blank |
+| `actor_id` | `bigint` | → `users.id`, `ON DELETE RESTRICT` |
+| `created_at` | `timestamptz` | |
+
+Indexes: `(product_id, created_at DESC)` for a product's history, and `(actor_id)` for a user's changes.
+
+Conventions used throughout:
+
+- **Named constraints.** Every constraint has an explicit name (`<table>_<column>_<rule>`). The API can then map a violation to a specific error, and tests can check which rule fired.
+- **Check constraints instead of enum types** for small value sets like `role`, because a check constraint is easier to change later.
+- **`RESTRICT` on foreign keys.** Products and users with history are deactivated, never deleted, so the audit trail stays intact.
+- **Constraint tests.** Each constraint has an integration test in `api/migrations/schema_test.go`.
+
 ## Writing a migration
 
-1. Add the next numbered file to `api/migrations/`, e.g. `00005_add_reorder_threshold.sql`:
+1. Add the next numbered file to `api/migrations/`, e.g. `00006_add_product_unit.sql`:
    ```sql
    -- +goose Up
-   ALTER TABLE products ADD COLUMN reorder_threshold integer CHECK (reorder_threshold >= 0);
+   ALTER TABLE products ADD COLUMN unit text NOT NULL DEFAULT 'each';
 
    -- +goose Down
-   ALTER TABLE products DROP COLUMN reorder_threshold;
+   ALTER TABLE products DROP COLUMN unit;
    ```
 2. Each migration runs in a transaction. Statements that can't run in one, such as `CREATE INDEX CONCURRENTLY`, need `-- +goose NO TRANSACTION` at the top of the file.
 3. Apply it locally with `migrate up`, then check that the Down section works by running `migrate down` followed by `up` again.
