@@ -134,12 +134,39 @@ Everything runs through `docker compose`. You don't need Go installed.
 | Apply pending migrations | `docker compose run --rm --build migrate up` |
 | Roll back the latest migration | `docker compose run --rm --build migrate down` |
 | Show migration status | `docker compose run --rm --build migrate status` |
+| Load local sample data | `docker compose run --rm --build seed` |
 | Run unit and integration tests | `docker compose run --rm test` |
 | Run one package's tests | `docker compose run --rm test go test ./migrations` |
 | Open psql | `docker compose exec postgres psql -U warehouse` |
 | Wipe the local database | `docker compose down -v` |
 
 `migrate` also accepts `up-to V`, `down-to V` and `version`. Run it with no arguments to see the usage.
+
+### Seed data
+
+`docker compose run --rm --build seed` fills the local database with sample data. Keep `--build`: the seed runs migrations first, and without it a stale `migrate` image could seed an old schema. It's **local only**:
+
+- It's not a migration. The SQL lives in `dev/seed/seed.sql`, outside `api/`, so it's never embedded in the `migrate` binary or copied into any image, and CI never runs it.
+- The `seed` service runs that file with the stock `postgres:17-alpine` image's `psql`, using the same `DB_*` credentials as the rest of the compose stack. It runs with `ON_ERROR_STOP=1` in a single transaction, so it applies completely or not at all.
+- `docker compose up` doesn't run it (it's behind the `seed` profile), and the API doesn't depend on it, so the stack starts with an empty database unless you ask for data. `run --rm --build seed` starts Postgres and applies migrations first.
+- The API doesn't serve this data yet. `api/cmd/api/main.go` still wires the in-memory store (`memory.New(...)`), so until the API switches to the Postgres store the seeded rows are only visible through psql (`docker compose exec postgres psql -U warehouse`).
+
+It inserts:
+
+- 3 users with `@example.com` addresses: `admin@example.com` (admin), `robin@example.com` and `casey@example.com` (requesters).
+- 20 products with 6-digit SKUs (`100101`–`700701`) across a few categories (one uncategorized), some below their reorder threshold and two out of stock.
+- One `stock_adjustments` row per product that starts with stock ("Opening stock (local seed data)", by the admin), so each product's `total_quantity` equals the sum of its adjustments, as the schema requires.
+
+It's safe to re-run. Every insert uses `ON CONFLICT DO NOTHING`, and opening-stock adjustments are only written for products that the same run actually inserted. A re-run, or a seed SKU you've already created yourself, adds nothing and doesn't change existing stock. psql's `INSERT 0 n` output shows how many rows were added: users first, then stock adjustments.
+To start over, drop and recreate the database, then seed it again (which also re-applies migrations):
+
+```sh
+docker compose exec postgres dropdb -U warehouse --force warehouse
+docker compose exec postgres createdb -U warehouse warehouse
+docker compose run --rm --build seed
+```
+
+`--force` disconnects the running API, if any; restart it afterwards. Avoid `docker compose down -v` for this: besides the database volume (`pgdata`), it deletes the `gomodcache` and `gobuildcache` volumes, so the next test run downloads and rebuilds everything.
 
 ## Schema
 
