@@ -48,7 +48,7 @@ var (
 func postProduct(t *testing.T, products ProductService, id *identity.Identity, body string) (*httptest.ResponseRecorder, *telemetry.Event) {
 	t.Helper()
 	mux := http.NewServeMux()
-	Register(mux, &fakeItems{}, products)
+	Register(mux, &fakeItems{}, products, fakeUsers{})
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/products", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -286,4 +286,50 @@ func TestCreateProductWithService(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestRoutesResolveDevUser checks that Register puts identity.DevHeader in
+// front of every v1 route.
+func TestRoutesResolveDevUser(t *testing.T) {
+	users := fakeUsers{"admin@example.com": adminID}
+	tests := []struct {
+		name, method, path, body string
+	}{
+		{"get item", http.MethodGet, "/api/v1/items/123456", ""},
+		{"create product", http.MethodPost, "/api/v1/admin/products", `{"sku":"123456","name":"Pallet jack"}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name+" unknown user", func(t *testing.T) {
+			mux := http.NewServeMux()
+			Register(mux, &fakeItems{}, &fakeProducts{}, users)
+			req := httptest.NewRequest(tt.method, tt.path, strings.NewReader(tt.body))
+			req.Header.Set(identity.DevUserHeader, "nobody@example.com")
+			rec := httptest.NewRecorder()
+			mux.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusUnauthorized {
+				t.Errorf("status = %d, want %d", rec.Code, http.StatusUnauthorized)
+			}
+			if got := errorBody(t, rec); got != "unknown dev user" {
+				t.Errorf("error = %q, want %q", got, "unknown dev user")
+			}
+		})
+	}
+
+	t.Run("create product known user", func(t *testing.T) {
+		products := &fakeProducts{product: inventory.Product{ID: 1, SKU: "123456"}}
+		mux := http.NewServeMux()
+		Register(mux, &fakeItems{}, products, users)
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/products", strings.NewReader(`{"sku":"123456","name":"Pallet jack"}`))
+		req.Header.Set(identity.DevUserHeader, "admin@example.com")
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusCreated {
+			t.Errorf("status = %d, want %d", rec.Code, http.StatusCreated)
+		}
+		if want := (inventory.Actor{UserID: 1, Admin: true}); products.gotActor != want {
+			t.Errorf("service called with actor %+v, want %+v", products.gotActor, want)
+		}
+	})
 }

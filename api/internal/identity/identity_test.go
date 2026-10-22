@@ -9,6 +9,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/johnmhayde/warehouse-service/api/internal/telemetry"
 )
 
 // fakeUsers is a Users that serves identities from a map keyed by email and
@@ -109,6 +111,20 @@ func TestDevHeaderDoesNotLeakInternalErrors(t *testing.T) {
 
 	if strings.Contains(rec.Body.String(), "db down") {
 		t.Errorf("response body leaks internal error: %s", rec.Body.String())
+	}
+}
+
+func TestDevHeaderRecordsLookupError(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set(DevUserHeader, "admin@example.com")
+	ctx, event := telemetry.NewContext(req.Context())
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {})
+
+	DevHeader(&fakeUsers{err: errors.New("db down: connection refused")}, next).ServeHTTP(httptest.NewRecorder(), req.WithContext(ctx))
+
+	attrs := event.Attrs()
+	if len(attrs) != 1 || attrs[0].Key != "error.message" || !strings.Contains(attrs[0].Value.String(), "db down") {
+		t.Errorf("event attrs = %v, want error.message with the lookup error", attrs)
 	}
 }
 

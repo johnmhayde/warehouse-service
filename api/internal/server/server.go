@@ -27,11 +27,11 @@ type Server struct {
 
 // New builds a Server with all routes and middleware mounted. It does not
 // start listening; call Run for that. users resolves the X-Dev-User header
-// (the POC identity mode; see package identity).
+// on the /api/v1 routes (the POC identity mode; see package identity).
 func New(cfg config.Config, logger *slog.Logger, hc *health.Checker, items v1.ItemService, products v1.ProductService, users identity.Users) *Server {
 	mux := http.NewServeMux()
 	hc.Register(mux)
-	v1.Register(mux, items, products)
+	v1.Register(mux, items, products, users)
 
 	return &Server{
 		cfg:    cfg,
@@ -39,7 +39,7 @@ func New(cfg config.Config, logger *slog.Logger, hc *health.Checker, items v1.It
 		health: hc,
 		http: &http.Server{
 			Addr:    cfg.Addr,
-			Handler: handler(logger, users, mux),
+			Handler: handler(logger, mux),
 			// http.Server has no timeouts by default, so a slow or idle client
 			// can hold a connection open forever.
 			ReadHeaderTimeout: 5 * time.Second,
@@ -54,10 +54,11 @@ func New(cfg config.Config, logger *slog.Logger, hc *health.Checker, items v1.It
 	}
 }
 
-// handler wraps mux in the middleware chain. logRequests is outermost so
-// that requests rejected by the identity middleware are logged too.
-func handler(logger *slog.Logger, users identity.Users, mux *http.ServeMux) http.Handler {
-	return logRequests(logger, identity.DevHeader(users, recordRoute(mux)))
+// handler wraps mux in the middleware chain. Identity is resolved per
+// route inside mux (see v1.Register), so logRequests sees the matched
+// route even for requests the identity middleware rejects.
+func handler(logger *slog.Logger, mux *http.ServeMux) http.Handler {
+	return logRequests(logger, mux)
 }
 
 // Run serves HTTP until ctx is cancelled, then shuts down gracefully: it

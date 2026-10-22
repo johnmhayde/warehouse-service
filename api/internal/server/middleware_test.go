@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -11,6 +12,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/johnmhayde/warehouse-service/api/internal/config"
+	"github.com/johnmhayde/warehouse-service/api/internal/health"
 	"github.com/johnmhayde/warehouse-service/api/internal/identity"
 	"github.com/johnmhayde/warehouse-service/api/internal/telemetry"
 )
@@ -25,26 +28,27 @@ func (fakeUsers) LookupByEmail(ctx context.Context, email string) (identity.Iden
 	return identity.Identity{}, fmt.Errorf("lookup %s: %w", email, identity.ErrUnknownUser)
 }
 
-// serveLogged sends req through the full middleware chain around a mux with
-// one route, GET /things/{id}, that enriches the event. It returns the
-// response and every log line written, decoded.
+// serveLogged sends req through the middleware chain around a mux with one
+// route, GET /things/{id}, that resolves identity the way the v1 routes do
+// and enriches the event. It returns the response and every log line
+// written, decoded.
 func serveLogged(t *testing.T, req *http.Request) (*httptest.ResponseRecorder, []map[string]any) {
 	t.Helper()
 	var logs bytes.Buffer
 	logger := slog.New(slog.NewJSONHandler(&logs, nil))
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /things/{id}", func(w http.ResponseWriter, r *http.Request) {
+	mux.Handle("GET /things/{id}", identity.DevHeader(fakeUsers{}, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		telemetry.Add(r.Context(), slog.String("thing.id", r.PathValue("id")))
 		if id, ok := identity.From(r.Context()); ok {
 			telemetry.Add(r.Context(), slog.Int64("user.id", id.UserID))
 		}
 		w.WriteHeader(http.StatusAccepted)
 		_, _ = w.Write([]byte("ok"))
-	})
+	})))
 
 	rec := httptest.NewRecorder()
-	handler(logger, fakeUsers{}, mux).ServeHTTP(rec, req)
+	handler(logger, mux).ServeHTTP(rec, req)
 
 	var lines []map[string]any
 	for _, line := range strings.Split(strings.TrimSpace(logs.String()), "\n") {
@@ -84,8 +88,8 @@ func TestLogRequests(t *testing.T) {
 			absent: []string{"user.id"},
 		},
 		{
-			// identity.DevHeader hands the mux a copy of the request, so
-			// this checks the route still reaches the log line.
+			// identity.DevHeader hands the route a copy of the request, so
+			// this checks the identity still reaches the event.
 			name:       "with identity",
 			path:       "/things/42",
 			devUser:    "admin@example.com",
@@ -101,8 +105,9 @@ func TestLogRequests(t *testing.T) {
 			path:       "/things/42",
 			devUser:    "nobody@example.com",
 			wantStatus: http.StatusUnauthorized,
+			// The mux matches before identity runs, so the route is known.
 			want: map[string]any{
-				"http.route":  "",
+				"http.route":  "GET /things/{id}",
 				"http.status": float64(http.StatusUnauthorized),
 			},
 			absent: []string{"thing.id"},
@@ -146,6 +151,41 @@ func TestLogRequests(t *testing.T) {
 			}
 			if _, ok := line["duration_ms"].(float64); !ok {
 				t.Errorf("duration_ms = %#v, want a number", line["duration_ms"])
+			}
+		})
+	}
+}
+
+// failingUsers is an identity.Users whose lookups always fail, and which
+// counts them.
+type failingUsers struct {
+	calls int
+}
+
+func (f *failingUsers) LookupByEmail(ctx context.Context, email string) (identity.Identity, error) {
+	f.calls++
+	return identity.Identity{}, errors.New("db down: connection refused")
+}
+
+func TestHealthEndpointsSkipIdentity(t *testing.T) {
+	for _, path := range []string{"/healthz", "/readyz"} {
+		t.Run(path, func(t *testing.T) {
+			logger := slog.New(slog.DiscardHandler)
+			hc := health.New(logger)
+			hc.SetReady(true)
+			users := &failingUsers{}
+			srv := New(config.Config{}, logger, hc, nil, nil, users)
+
+			req := httptest.NewRequest(http.MethodGet, path, nil)
+			req.Header.Set(identity.DevUserHeader, "admin@example.com")
+			rec := httptest.NewRecorder()
+			srv.http.Handler.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusOK {
+				t.Errorf("status = %d, want %d", rec.Code, http.StatusOK)
+			}
+			if users.calls != 0 {
+				t.Errorf("user lookup called %d times, want 0", users.calls)
 			}
 		})
 	}

@@ -77,9 +77,12 @@ deps:
     mayDependOn: [migrations]
     canUse: [pgx, goose]
 
-  # config, health, telemetry and identity are leaves: no project or vendor
-  # deps.
+  # config, health and telemetry are leaves: no project or vendor deps.
   # Components without an entry in deps may not depend on anything.
+
+  # identity records lookup failures on the request's telemetry event.
+  identity:
+    mayDependOn: [telemetry]
 
   server:
     mayDependOn: [config, health, httpapi, identity, telemetry]

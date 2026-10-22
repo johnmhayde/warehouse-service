@@ -3,7 +3,10 @@ package identity
 import (
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
+
+	"github.com/johnmhayde/warehouse-service/api/internal/telemetry"
 )
 
 // DevUserHeader carries the email of the user a request is made as, in the
@@ -28,6 +31,9 @@ func DevHeader(users Users, next http.Handler) http.Handler {
 			writeError(w, http.StatusUnauthorized, "unknown dev user")
 			return
 		case err != nil:
+			// The client gets a generic message; the cause goes on the
+			// request's event.
+			telemetry.Add(r.Context(), slog.String("error.message", err.Error()))
 			writeError(w, http.StatusInternalServerError, "internal error")
 			return
 		}
@@ -36,8 +42,8 @@ func DevHeader(users Users, next http.Handler) http.Handler {
 	})
 }
 
-// writeError writes the API's {"error": "..."} body. identity is a leaf
-// package, so it can't share httpapi's helper.
+// writeError writes the API's {"error": "..."} body. httpapi depends on
+// identity, so identity can't share httpapi's helper.
 func writeError(w http.ResponseWriter, status int, message string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)

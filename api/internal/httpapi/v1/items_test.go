@@ -4,13 +4,26 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
+	"github.com/johnmhayde/warehouse-service/api/internal/identity"
 	"github.com/johnmhayde/warehouse-service/api/internal/inventory"
 )
+
+// fakeUsers is an identity.Users serving identities by email.
+type fakeUsers map[string]identity.Identity
+
+func (f fakeUsers) LookupByEmail(ctx context.Context, email string) (identity.Identity, error) {
+	id, ok := f[email]
+	if !ok {
+		return identity.Identity{}, fmt.Errorf("lookup %s: %w", email, identity.ErrUnknownUser)
+	}
+	return id, nil
+}
 
 // fakeItems is an ItemService that returns canned results and records the
 // SKU it was asked for.
@@ -31,7 +44,7 @@ func (f *fakeItems) GetItem(ctx context.Context, sku inventory.SKU) (inventory.I
 func serve(t *testing.T, items ItemService, path string) *httptest.ResponseRecorder {
 	t.Helper()
 	mux := http.NewServeMux()
-	Register(mux, items, &fakeProducts{})
+	Register(mux, items, &fakeProducts{}, fakeUsers{})
 
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))

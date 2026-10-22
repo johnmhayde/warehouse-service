@@ -1,7 +1,6 @@
 package server
 
 import (
-	"context"
 	"log/slog"
 	"net/http"
 	"time"
@@ -14,17 +13,18 @@ import (
 // before calling next, and the attributes handlers add to it with
 // telemetry.Add are appended to that line.
 //
-// The ServeMux inside next must be wrapped in recordRoute, or http.route is
-// empty.
+// next should be the ServeMux itself: ServeMux sets r.Pattern on the request
+// it is given, which is how the matched route reaches http.route. A
+// middleware in between that passes on a copy of the request (WithContext)
+// would hide it.
 func logRequests(logger *slog.Logger, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		rec := &statusRecorder{ResponseWriter: w}
 		ctx, event := telemetry.NewContext(r.Context())
-		route := new(string)
-		ctx = context.WithValue(ctx, routeKey{}, route)
+		r2 := r.WithContext(ctx)
 
-		next.ServeHTTP(rec, r.WithContext(ctx))
+		next.ServeHTTP(rec, r2)
 
 		if rec.status == 0 {
 			rec.status = http.StatusOK
@@ -33,28 +33,13 @@ func logRequests(logger *slog.Logger, next http.Handler) http.Handler {
 			slog.String("http.method", r.Method),
 			// The matched route, e.g. "GET /healthz". It is empty when
 			// nothing matched (404).
-			slog.String("http.route", *route),
+			slog.String("http.route", r2.Pattern),
 			slog.String("http.path", r.URL.Path),
 			slog.Int("http.status", rec.status),
 			slog.Int("http.response_bytes", rec.bytes),
 			slog.Float64("duration_ms", float64(time.Since(start).Microseconds())/1000),
 		}
 		logger.LogAttrs(r.Context(), slog.LevelInfo, "http request", append(attrs, event.Attrs()...)...)
-	})
-}
-
-type routeKey struct{}
-
-// recordRoute wraps the ServeMux and reports the route it matched back to
-// logRequests. ServeMux sets r.Pattern only on the request it is given, and
-// middleware in between (identity.DevHeader) passes it a copy made by
-// WithContext, so logRequests can't read r.Pattern from its own request.
-func recordRoute(mux *http.ServeMux) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		mux.ServeHTTP(w, r)
-		if route, ok := r.Context().Value(routeKey{}).(*string); ok {
-			*route = r.Pattern
-		}
 	})
 }
 

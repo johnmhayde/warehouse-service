@@ -10,6 +10,7 @@ import (
 	"context"
 	"net/http"
 
+	"github.com/johnmhayde/warehouse-service/api/internal/identity"
 	"github.com/johnmhayde/warehouse-service/api/internal/inventory"
 )
 
@@ -35,8 +36,15 @@ type handler struct {
 // Register mounts the v1 routes on mux. Use full method + path patterns.
 // Routes that only admins may call go under Prefix+"/admin"; the service
 // they call still makes the authorization decision.
-func Register(mux *http.ServeMux, items ItemService, products ProductService) {
+//
+// Every v1 route resolves the caller with identity.DevHeader, using users.
+// It wraps each route rather than the whole mux so that /healthz and
+// /readyz never look anyone up.
+func Register(mux *http.ServeMux, items ItemService, products ProductService, users identity.Users) {
 	h := &handler{items: items, products: products}
-	mux.HandleFunc("GET "+Prefix+"/items/{sku}", h.getItem)
-	mux.HandleFunc("POST "+Prefix+"/admin/products", h.createProduct)
+	handle := func(pattern string, fn http.HandlerFunc) {
+		mux.Handle(pattern, identity.DevHeader(users, fn))
+	}
+	handle("GET "+Prefix+"/items/{sku}", h.getItem)
+	handle("POST "+Prefix+"/admin/products", h.createProduct)
 }
