@@ -28,10 +28,10 @@ type Server struct {
 // New builds a Server with all routes and middleware mounted. It does not
 // start listening; call Run for that. users resolves the X-Dev-User header
 // (the POC identity mode; see package identity).
-func New(cfg config.Config, logger *slog.Logger, hc *health.Checker, items v1.ItemService, users identity.Users) *Server {
+func New(cfg config.Config, logger *slog.Logger, hc *health.Checker, items v1.ItemService, products v1.ProductService, users identity.Users) *Server {
 	mux := http.NewServeMux()
 	hc.Register(mux)
-	v1.Register(mux, items)
+	v1.Register(mux, items, products)
 
 	return &Server{
 		cfg:    cfg,

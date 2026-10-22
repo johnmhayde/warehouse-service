@@ -31,7 +31,7 @@ func (f *fakeItems) GetItem(ctx context.Context, sku inventory.SKU) (inventory.I
 func serve(t *testing.T, items ItemService, path string) *httptest.ResponseRecorder {
 	t.Helper()
 	mux := http.NewServeMux()
-	Register(mux, items)
+	Register(mux, items, &fakeProducts{})
 
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))

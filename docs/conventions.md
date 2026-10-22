@@ -64,6 +64,9 @@ Rules:
 - **Contract:** [`api/openapi.yaml`](../api/openapi.yaml) (OpenAPI 3.1) describes every endpoint the code serves: status codes, JSON field names and error bodies. The handlers are the source of truth; a change that adds an endpoint or changes a status code, field or error body updates the spec in the same PR. Planned endpoints don't go in it until they exist. Lint it without a local install with `docker run --rm -v "$PWD/api:/spec" redocly/cli lint /spec/openapi.yaml`.
 - **Errors:** error responses are JSON `{"error": "<message>"}` with a short, client-safe message; internal details are only logged.
 - **DTOs:** request and response structs are defined in the version package. Domain types carry no JSON tags and are never encoded directly.
+- **Request bodies:** decode with `decodeJSON` in `httpapi/v1`: one JSON object of at most 64 KiB, no unknown fields, nothing after it. A body that breaks this gets 400 `{"error": "invalid request body"}`, or 413 `{"error": "request body too large"}` when it's over the limit. `Content-Type` isn't checked.
+- **Admin routes** go under `/api/v1/admin/...`. The prefix only groups them: the domain service still makes the authorization decision (it takes an `inventory.Actor` built from the request's identity and returns `ErrForbidden`, mapped to 403 `{"error": "admin role required"}`). The service checks the role before its own validation, so a non-admin gets 403 for any request whose body decodes.
+- **Handler order:** identity (401 when the handler needs one and there is none), then the body and path values (400/413), then the service call, whose errors map to statuses (403, 400 for `*inventory.ValidationError` with its message, 404/409, else 500 `internal error`).
 - **Timeouts:** the server always sets read-header, read, write and idle timeouts.
 - **Identity (POC):** callers name themselves with an `X-Dev-User: <email>` header. `identity.DevHeader` looks the email up (case-insensitively) among active users and puts the `identity.Identity` in the request context; an unknown email gets 401 `{"error": "unknown dev user"}`, and a request without the header carries no identity (handlers that need one return 401). Anyone can send the header, so the API refuses to start with `APP_ENV=production`. Real authentication replaces this in EP07.
 
@@ -95,6 +98,7 @@ Secrets (currently just `DB_PASSWORD`) are injected from Kubernetes Secrets as e
 - Field names are lowercase, dot-namespaced and snake_case within a segment: `http.method`, `http.route`, `http.status`, `duration_ms`, `warehouse.id`, `stock.below_reorder`. The frontend uses the same names.
 - `http.route` is the matched pattern (`GET /api/v1/items/{sku}`), not the raw path, so it can be grouped on. The raw path goes in `http.path`.
 - Units go in the field name (`_ms`, `_bytes`).
+- A handler records how its request ended in one `<entity>.outcome` field (e.g. `product.outcome`: `created`, `unauthenticated`, `forbidden`, `invalid`, `duplicate_sku`, `error`), along with the ids it knows (`user.id`, `product.sku`, `product.id`). On a 500 the internal error goes in `error.message`, never in the response.
 
 ## Testing
 

@@ -71,7 +71,8 @@ func run(ctx context.Context, getenv func(string) string, stdout io.Writer) erro
 		inventory.Item{SKU: "000123", Name: "Pallet jack", Quantity: 140},
 	)
 	items := inventory.NewService(store)
+	products := inventory.NewProductService(postgres.NewProducts(pool))
 
-	srv := server.New(cfg, logger, hc, items, postgres.NewUsers(pool))
+	srv := server.New(cfg, logger, hc, items, products, postgres.NewUsers(pool))
 	return srv.Run(ctx)
 }
