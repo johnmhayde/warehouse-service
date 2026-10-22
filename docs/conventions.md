@@ -31,6 +31,7 @@ api/
 │   ├── api/              # main package: wiring only, no business logic
 │   └── migrate/          # applies migrations; its own image, never run by the API
 ├── migrations/           # goose SQL migrations, embedded into cmd/migrate
+├── openapi.yaml          # OpenAPI 3.1 contract for /api/v1, /healthz and /readyz
 └── internal/
     ├── config/           # environment variables → Config
     ├── server/           # http.Server, middleware, lifecycle
@@ -58,6 +59,8 @@ Rules:
 - **Versioning:** public endpoints live under `/api/v1`. A breaking change gets a new `httpapi/v2` package mounted at `/api/v2`, next to v1 and reusing the same domain services. Additive changes (new fields, new endpoints) stay in the current version.
 - **Infrastructure endpoints aren't versioned:** `/healthz` (liveness) and `/readyz` (readiness).
 - **Routing:** use the standard library `http.ServeMux` with method + path patterns (`"GET /api/v1/items/{sku}"`). Read path values with `r.PathValue("sku")`.
+- **Contract:** [`api/openapi.yaml`](../api/openapi.yaml) (OpenAPI 3.1) describes every endpoint the code serves: status codes, JSON field names and error bodies. The handlers are the source of truth; a change that adds an endpoint or changes a status code, field or error body updates the spec in the same PR. Planned endpoints don't go in it until they exist. Lint it without a local install with `docker run --rm -v "$PWD/api:/spec" redocly/cli lint /spec/openapi.yaml`.
+- **Errors:** error responses are JSON `{"error": "<message>"}` with a short, client-safe message; internal details are only logged.
 - **DTOs:** request and response structs are defined in the version package. Domain types carry no JSON tags and are never encoded directly.
 - **Timeouts:** the server always sets read-header, read, write and idle timeouts.
 
