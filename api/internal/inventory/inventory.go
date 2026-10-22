@@ -1,4 +1,5 @@
-// Package inventory defines items, SKUs and the rules for working with them.
+// Package inventory defines products, items, SKUs and the rules for working
+// with them.
 package inventory
 
 import (

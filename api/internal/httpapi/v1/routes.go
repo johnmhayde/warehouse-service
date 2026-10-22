@@ -10,6 +10,7 @@ import (
 	"context"
 	"net/http"
 
+	"github.com/johnmhayde/warehouse-service/api/internal/identity"
 	"github.com/johnmhayde/warehouse-service/api/internal/inventory"
 )
 
@@ -21,12 +22,29 @@ type ItemService interface {
 	GetItem(ctx context.Context, sku inventory.SKU) (inventory.Item, error)
 }
 
-type handler struct {
-	items ItemService
+// ProductService is what the v1 handlers need for managing the product
+// catalog.
+type ProductService interface {
+	CreateProduct(ctx context.Context, actor inventory.Actor, p inventory.NewProduct) (inventory.Product, error)
 }
 
-// Register mounts the v1 routes on mux. Use full method + path patterns
-func Register(mux *http.ServeMux, items ItemService) {
-	h := &handler{items: items}
-	mux.HandleFunc("GET "+Prefix+"/items/{sku}", h.getItem)
+type handler struct {
+	items    ItemService
+	products ProductService
+}
+
+// Register mounts the v1 routes on mux. Use full method + path patterns.
+// Routes that only admins may call go under Prefix+"/admin"; the service
+// they call still makes the authorization decision.
+//
+// Every v1 route resolves the caller with identity.DevHeader, using users.
+// It wraps each route rather than the whole mux so that /healthz and
+// /readyz never look anyone up.
+func Register(mux *http.ServeMux, items ItemService, products ProductService, users identity.Users) {
+	h := &handler{items: items, products: products}
+	handle := func(pattern string, fn http.HandlerFunc) {
+		mux.Handle(pattern, identity.DevHeader(users, fn))
+	}
+	handle("GET "+Prefix+"/items/{sku}", h.getItem)
+	handle("POST "+Prefix+"/admin/products", h.createProduct)
 }

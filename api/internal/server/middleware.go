@@ -4,31 +4,42 @@ import (
 	"log/slog"
 	"net/http"
 	"time"
+
+	"github.com/johnmhayde/warehouse-service/api/internal/telemetry"
 )
 
-// logRequests emits one structured log line per request once it completes.
-// It is the seed of the wide-event middleware: later it will create an event
-// in the request context that handlers enrich, and emit that instead.
+// logRequests emits one structured log line per request once it completes:
+// the request's wide event. It puts a telemetry.Event in the request context
+// before calling next, and the attributes handlers add to it with
+// telemetry.Add are appended to that line.
+//
+// next should be the ServeMux itself: ServeMux sets r.Pattern on the request
+// it is given, which is how the matched route reaches http.route. A
+// middleware in between that passes on a copy of the request (WithContext)
+// would hide it.
 func logRequests(logger *slog.Logger, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		rec := &statusRecorder{ResponseWriter: w}
+		ctx, event := telemetry.NewContext(r.Context())
+		r2 := r.WithContext(ctx)
 
-		next.ServeHTTP(rec, r)
+		next.ServeHTTP(rec, r2)
 
 		if rec.status == 0 {
 			rec.status = http.StatusOK
 		}
-		logger.LogAttrs(r.Context(), slog.LevelInfo, "http request",
+		attrs := []slog.Attr{
 			slog.String("http.method", r.Method),
-			// ServeMux sets r.Pattern to the matched route, e.g.
-			// "GET /healthz". It is empty when nothing matched (404).
-			slog.String("http.route", r.Pattern),
+			// The matched route, e.g. "GET /healthz". It is empty when
+			// nothing matched (404).
+			slog.String("http.route", r2.Pattern),
 			slog.String("http.path", r.URL.Path),
 			slog.Int("http.status", rec.status),
 			slog.Int("http.response_bytes", rec.bytes),
 			slog.Float64("duration_ms", float64(time.Since(start).Microseconds())/1000),
-		)
+		}
+		logger.LogAttrs(r.Context(), slog.LevelInfo, "http request", append(attrs, event.Attrs()...)...)
 	})
 }
 

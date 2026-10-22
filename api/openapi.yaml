@@ -16,14 +16,28 @@ info:
     `404 page not found`, and a known path called with the wrong method gets a
     plain-text `405 Method Not Allowed` with an `Allow` header. Neither is a
     JSON error body.
+
+    Identity (POC): a caller names themselves with the `X-Dev-User` header
+    (see the `devUser` security scheme). Every `/api/v1` route resolves the
+    header, so on any of them a header that names no active user gets
+    `401 {"error": "unknown dev user"}`, and a failed lookup gets
+    `500 {"error": "internal error"}`. `/healthz` and `/readyz` ignore the
+    header. Without the header a request carries no identity; only
+    endpoints that declare `devUser` security need one. Real authentication
+    replaces this in EP07.
+
+    Admin endpoints live under `/api/v1/admin`.
 servers:
   - url: /
     description: Same origin as this document; locally the compose stack serves it on http://localhost:8080
-# The API has no authentication yet.
+# No authentication by default. Endpoints that need to know the caller
+# declare the devUser scheme (POC identity mode) themselves.
 security: []
 tags:
   - name: items
     description: Inventory items
+  - name: products
+    description: Product catalog management (admin only)
   - name: health
     description: Liveness and readiness probes for container runtimes and load balancers
 paths:
@@ -53,6 +67,16 @@ paths:
                 $ref: '#/components/schemas/Error'
               example:
                 error: invalid SKU
+        '401':
+          description: |
+            The `X-Dev-User` header names no active user. The header is
+            optional here; without it the item is still returned.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error: unknown dev user
         '404':
           description: No item has this SKU.
           content:
@@ -62,7 +86,158 @@ paths:
               example:
                 error: item not found
         '500':
-          description: The item could not be loaded. Internal details are logged, never returned.
+          description: |
+            The item could not be loaded, or the `X-Dev-User` lookup failed.
+            Internal details are logged, never returned.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error: internal error
+  /api/v1/admin/products:
+    post:
+      operationId: createProduct
+      summary: Create a product
+      description: |
+        Adds a product to the catalog. Admins only. A new product starts
+        active with `total_quantity` 0; stock changes only through stock
+        adjustments. `name` and `category` are trimmed, and an empty or
+        blank `category` means uncategorized.
+
+        Checks run in this order: the caller must be identified (401); the
+        body must be a single JSON object of at most 64 KiB (413) with only
+        the documented fields and a valid SKU (400); the caller must be an
+        admin (403); then the product rules apply (400) and the SKU must be
+        unused (409). So a non-admin gets 403 for any request whose body
+        decodes and has a valid SKU, whatever its other field values. The
+        `Content-Type` header is not checked; the body is always parsed as
+        JSON.
+      tags: [products]
+      security:
+        - devUser: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateProductRequest'
+            examples:
+              full:
+                summary: Every field
+                value:
+                  sku: '000123'
+                  name: Pallet jack
+                  description: Manual, 2500 kg capacity
+                  category: Handling
+                  reorder_threshold: 5
+              minimal:
+                summary: Required fields only
+                value:
+                  sku: '123456'
+                  name: Shrink wrap
+      responses:
+        '201':
+          description: The product was created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Product'
+              example:
+                id: 42
+                sku: '000123'
+                name: Pallet jack
+                description: Manual, 2500 kg capacity
+                category: Handling
+                total_quantity: 0
+                reorder_threshold: 5
+                active: true
+                created_at: '2026-10-22T01:14:50.123456Z'
+                updated_at: '2026-10-22T01:14:50.123456Z'
+        '400':
+          description: |
+            The body is not a single JSON object matching
+            `CreateProductRequest` (malformed JSON, an unknown field, a wrong
+            type, or data after the object), the SKU is invalid, or a field
+            breaks a product rule. Rule violations name the field.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                invalidBody:
+                  summary: Malformed JSON, unknown field, wrong type or trailing data
+                  value:
+                    error: invalid request body
+                invalidSKU:
+                  summary: SKU missing or not six digits
+                  value:
+                    error: invalid SKU
+                nameRequired:
+                  summary: Name missing or blank
+                  value:
+                    error: name is required
+                nameTooLong:
+                  value:
+                    error: name must be at most 200 characters
+                descriptionTooLong:
+                  value:
+                    error: description must be at most 2000 characters
+                categoryTooLong:
+                  value:
+                    error: category must be at most 100 characters
+                nulCharacter:
+                  summary: A text field contains U+0000 (name, description or category)
+                  value:
+                    error: name must not contain NUL characters
+                reorderThresholdOutOfRange:
+                  value:
+                    error: reorder_threshold must be between 0 and 2147483647
+        '401':
+          description: |
+            No `X-Dev-User` header was sent, or it names no active user
+            (`unknown dev user`, from the identity middleware).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                noIdentity:
+                  summary: No X-Dev-User header
+                  value:
+                    error: authentication required
+                unknownUser:
+                  summary: X-Dev-User names no active user
+                  value:
+                    error: unknown dev user
+        '403':
+          description: The caller is not an admin.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error: admin role required
+        '409':
+          description: A product with this SKU already exists.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error: product with this SKU already exists
+        '413':
+          description: The request body is larger than 64 KiB.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error: request body too large
+        '500':
+          description: |
+            The product could not be created, or the `X-Dev-User` lookup
+            failed. Internal details are logged, never returned.
           content:
             application/json:
               schema:
@@ -126,6 +301,15 @@ paths:
                     status: not ready
                     failed: postgres
 components:
+  securitySchemes:
+    devUser:
+      type: apiKey
+      in: header
+      name: X-Dev-User
+      description: |
+        POC identity mode: the email of an active user, matched
+        case-insensitively. The API trusts it as is, so it refuses to start
+        with `APP_ENV=production`. Real authentication replaces this in EP07.
   parameters:
     SKU:
       name: sku
@@ -162,6 +346,81 @@ components:
           description: Units on hand.
           examples:
             - 3
+    CreateProductRequest:
+      type: object
+      additionalProperties: false
+      required: [sku, name]
+      properties:
+        sku:
+          $ref: '#/components/schemas/SKU'
+        name:
+          type: string
+          description: Display name. Trimmed; must not be blank. At most 200 characters after trimming.
+          maxLength: 200
+          examples:
+            - Pallet jack
+        description:
+          type: string
+          description: Free-text description. Defaults to empty. Not trimmed.
+          maxLength: 2000
+          default: ''
+        category:
+          type: [string, 'null']
+          description: Category name, trimmed. Omitted, null, empty or blank means uncategorized.
+          maxLength: 100
+          examples:
+            - Handling
+        reorder_threshold:
+          type: [integer, 'null']
+          description: Below this quantity the product counts as low stock. Omitted or null means no threshold.
+          minimum: 0
+          maximum: 2147483647
+          examples:
+            - 5
+    Product:
+      type: object
+      additionalProperties: false
+      required: [id, sku, name, description, category, total_quantity, reorder_threshold, active, created_at, updated_at]
+      properties:
+        id:
+          type: integer
+          format: int64
+          description: Product id, assigned by the server.
+          examples:
+            - 42
+        sku:
+          $ref: '#/components/schemas/SKU'
+        name:
+          type: string
+          examples:
+            - Pallet jack
+        description:
+          type: string
+          description: Empty when none was given.
+        category:
+          type: [string, 'null']
+          description: Null when the product is uncategorized.
+          examples:
+            - Handling
+        total_quantity:
+          type: integer
+          minimum: 0
+          description: Units on hand across the warehouse. Always 0 for a new product.
+        reorder_threshold:
+          type: [integer, 'null']
+          minimum: 0
+          description: Low-stock threshold; null when the product has none.
+        active:
+          type: boolean
+          description: Inactive products are hidden from normal use rather than deleted. New products are active.
+        created_at:
+          type: string
+          format: date-time
+          description: RFC 3339 timestamp in UTC.
+        updated_at:
+          type: string
+          format: date-time
+          description: RFC 3339 timestamp in UTC.
     Error:
       type: object
       additionalProperties: false

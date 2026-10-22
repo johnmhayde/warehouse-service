@@ -37,13 +37,14 @@ api/
     ├── config/           # environment variables → Config
     ├── server/           # http.Server, middleware, lifecycle
     ├── health/           # /healthz, /readyz (+ dependency checks)
+    ├── identity/         # who the request is from (POC: X-Dev-User header)
     ├── httpapi/v1/       # v1 handlers and request/response DTOs
     ├── inventory/        # domain: items, SKUs, stock levels
     ├── movement/         # (planned) domain: receiving, picking, transfers, adjustments
     ├── store/memory/     # in-memory repositories for development and tests
     ├── store/postgres/   # connection pool; Postgres implementations of domain repositories
     ├── pgtest/           # throwaway databases for integration tests
-    └── telemetry/        # (planned) wide-event builder and middleware
+    └── telemetry/        # request-scoped wide event that handlers enrich
 ```
 
 Rules:
@@ -63,18 +64,23 @@ Rules:
 - **Contract:** [`api/openapi.yaml`](../api/openapi.yaml) (OpenAPI 3.1) describes every endpoint the code serves: status codes, JSON field names and error bodies. The handlers are the source of truth; a change that adds an endpoint or changes a status code, field or error body updates the spec in the same PR. Planned endpoints don't go in it until they exist. Lint it without a local install with `docker run --rm -v "$PWD/api:/spec" redocly/cli lint /spec/openapi.yaml`.
 - **Errors:** error responses are JSON `{"error": "<message>"}` with a short, client-safe message; internal details are only logged.
 - **DTOs:** request and response structs are defined in the version package. Domain types carry no JSON tags and are never encoded directly.
+- **Request bodies:** decode with `decodeJSON` in `httpapi/v1`: one JSON object of at most 64 KiB, no unknown fields, nothing after it. A body that breaks this gets 400 `{"error": "invalid request body"}`, or 413 `{"error": "request body too large"}` when it's over the limit. `Content-Type` isn't checked.
+- **Admin routes** go under `/api/v1/admin/...`. The prefix only groups them: the domain service still makes the authorization decision (it takes an `inventory.Actor` built from the request's identity and returns `ErrForbidden`, mapped to 403 `{"error": "admin role required"}`). The service checks the role before its own validation, so a non-admin gets 403 for any request whose body decodes and has a valid SKU.
+- **Handler order:** identity (401 when the handler needs one and there is none), then the body and path values (400/413), then the service call, whose errors map to statuses (403, 400 for `*inventory.ValidationError` with its message, 404/409, else 500 `internal error`).
 - **Timeouts:** the server always sets read-header, read, write and idle timeouts.
+- **Identity (POC):** callers name themselves with an `X-Dev-User: <email>` header. `v1.Register` wraps each `/api/v1` route in `identity.DevHeader`, which looks the email up (case-insensitively) among active users and puts the `identity.Identity` in the request context; `/healthz` and `/readyz` ignore the header, so they never look anyone up. On a `/api/v1` route an unknown email gets 401 `{"error": "unknown dev user"}` and a failed lookup gets 500 `{"error": "internal error"}` (the cause goes in the event's `error.message`), and a request without the header carries no identity (handlers that need one return 401). Anyone can send the header, so the API refuses to start with `APP_ENV=production`. Real authentication replaces this in EP07.
 
 ## Configuration
 
 Configuration comes only from environment variables, which are read once at startup in `internal/config`. A variable that is set but invalid makes startup fail.
 
-| Variable               | Default | Meaning                                         |
-| ---------------------- | ------- | ----------------------------------------------- |
-| `API_ADDR`             | `:8080` | Listen address                                  |
-| `API_LOG_LEVEL`        | `info`  | `debug`, `info`, `warn` or `error`              |
-| `API_SHUTDOWN_TIMEOUT` | `15s`   | Maximum time in-flight requests get to drain    |
-| `DB_*`                 |         | PostgreSQL connection; see [database.md](database.md#configuration) |
+| Variable               | Default       | Meaning                                         |
+| ---------------------- | ------------- | ----------------------------------------------- |
+| `APP_ENV`              | `development` | `development`, `test` or `production`; the API refuses to start with `production` while the POC identity mode is the only one |
+| `API_ADDR`             | `:8080`       | Listen address                                  |
+| `API_LOG_LEVEL`        | `info`        | `debug`, `info`, `warn` or `error`              |
+| `API_SHUTDOWN_TIMEOUT` | `15s`         | Maximum time in-flight requests get to drain    |
+| `DB_*`                 |               | PostgreSQL connection; see [database.md](database.md#configuration) |
 
 Secrets (currently just `DB_PASSWORD`) are injected from Kubernetes Secrets as environment variables. Config types that hold secrets implement `String` and `slog.LogValuer` so the secret can't end up in logs.
 
@@ -88,10 +94,11 @@ Secrets (currently just `DB_PASSWORD`) are injected from Kubernetes Secrets as e
 ## Logging and telemetry
 
 - Logs are written with `log/slog` and its JSON handler to stdout.
-- Request middleware emits **one event per request**. This will grow into the wide event described in the README.
+- Request middleware emits **one event per request**: the wide event described in the README. Handlers enrich the request's event with `telemetry.Add(ctx, attrs...)` instead of logging their own lines, and the event's attributes are emitted on the single per-request `http request` log line. OpenTelemetry spans wait for WHS-201.
 - Field names are lowercase, dot-namespaced and snake_case within a segment: `http.method`, `http.route`, `http.status`, `duration_ms`, `warehouse.id`, `stock.below_reorder`. The frontend uses the same names.
 - `http.route` is the matched pattern (`GET /api/v1/items/{sku}`), not the raw path, so it can be grouped on. The raw path goes in `http.path`.
 - Units go in the field name (`_ms`, `_bytes`).
+- A handler records how its request ended in one `<entity>.outcome` field (e.g. `product.outcome`: `created`, `unauthenticated`, `forbidden`, `invalid`, `duplicate_sku`, `error`), along with the ids it knows (`user.id`, `product.sku`, `product.id`). On a 500 the internal error goes in `error.message`, never in the response.
 
 ## Testing
 
