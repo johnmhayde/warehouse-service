@@ -17,8 +17,8 @@ version: 3
 allow:
   # Every third-party import must be granted per component via canUse.
   depOnAnyVendor: false
-  # movement and telemetry are planned and don't exist yet; their rules are
-  # declared now so they apply as soon as the packages are added.
+  # movement is planned and doesn't exist yet; its rules are declared now
+  # so they apply as soon as the package is added.
   ignoreNotFoundComponents: true
   # The conventions are import rules. deepScan also treats passing a value
   # into another component's function as a dependency, so it reports the
@@ -43,7 +43,8 @@ components:
   config: { in: internal/config }
   server: { in: internal/server }
   health: { in: internal/health }
-  telemetry: { in: internal/telemetry/** } # planned
+  telemetry: { in: internal/telemetry/** }
+  identity: { in: internal/identity/** }
   migrations: { in: migrations }
   pgtest: { in: internal/pgtest }
 
@@ -76,11 +77,12 @@ deps:
     mayDependOn: [migrations]
     canUse: [pgx, goose]
 
-  # config, health and telemetry are leaves: no project or vendor deps.
+  # config, health, telemetry and identity are leaves: no project or vendor
+  # deps.
   # Components without an entry in deps may not depend on anything.
 
   server:
-    mayDependOn: [config, health, httpapi, telemetry]
+    mayDependOn: [config, health, httpapi, identity, telemetry]
 
   # Domain packages (inventory, movement) are deliberately absent: they may
   # not import any other project package (store/*, httpapi/*, server,
@@ -88,12 +90,12 @@ deps:
 
   # httpapi calls the domain; never store/* or a DB driver.
   httpapi:
-    mayDependOn: [inventory, movement]
+    mayDependOn: [inventory, movement, identity, telemetry]
 
   # store/* implements domain interfaces; never httpapi/* or server.
   store-memory:
     mayDependOn: [inventory, movement]
 
   store-postgres:
-    mayDependOn: [inventory, movement]
+    mayDependOn: [inventory, movement, identity]
     canUse: [pgx]

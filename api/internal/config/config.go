@@ -10,6 +10,9 @@ import (
 // Config holds everything the API needs to start. It is loaded once at
 // startup and passed explicitly to the packages that need it.
 type Config struct {
+	// Env is the deployment environment (APP_ENV): development, test or
+	// production.
+	Env string
 	// Addr is the TCP address the HTTP server listens on (API_ADDR).
 	Addr string
 	// LogLevel is the minimum slog level that is emitted (API_LOG_LEVEL).
@@ -21,14 +24,35 @@ type Config struct {
 	Database Database
 }
 
+// Values of Config.Env.
+const (
+	EnvDevelopment = "development"
+	EnvTest        = "test"
+	EnvProduction  = "production"
+)
+
+var envs = map[string]bool{
+	EnvDevelopment: true,
+	EnvTest:        true,
+	EnvProduction:  true,
+}
+
 // Load reads the configuration using getenv, applying defaults for unset
 // variables. It returns an error if any value is present but invalid, or if
 // a required value is missing.
 func Load(getenv func(string) string) (Config, error) {
 	cfg := Config{
+		Env:             EnvDevelopment,
 		Addr:            ":8080",
 		LogLevel:        slog.LevelInfo,
 		ShutdownTimeout: 15 * time.Second,
+	}
+
+	if v := getenv("APP_ENV"); v != "" {
+		if !envs[v] {
+			return Config{}, fmt.Errorf("APP_ENV: must be one of development, test, production, got %q", v)
+		}
+		cfg.Env = v
 	}
 
 	if v := getenv("API_ADDR"); v != "" {

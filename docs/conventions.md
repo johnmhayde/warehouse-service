@@ -37,13 +37,14 @@ api/
     ├── config/           # environment variables → Config
     ├── server/           # http.Server, middleware, lifecycle
     ├── health/           # /healthz, /readyz (+ dependency checks)
+    ├── identity/         # who the request is from (POC: X-Dev-User header)
     ├── httpapi/v1/       # v1 handlers and request/response DTOs
     ├── inventory/        # domain: items, SKUs, stock levels
     ├── movement/         # (planned) domain: receiving, picking, transfers, adjustments
     ├── store/memory/     # in-memory repositories for development and tests
     ├── store/postgres/   # connection pool; Postgres implementations of domain repositories
     ├── pgtest/           # throwaway databases for integration tests
-    └── telemetry/        # (planned) wide-event builder and middleware
+    └── telemetry/        # request-scoped wide event that handlers enrich
 ```
 
 Rules:
@@ -64,17 +65,19 @@ Rules:
 - **Errors:** error responses are JSON `{"error": "<message>"}` with a short, client-safe message; internal details are only logged.
 - **DTOs:** request and response structs are defined in the version package. Domain types carry no JSON tags and are never encoded directly.
 - **Timeouts:** the server always sets read-header, read, write and idle timeouts.
+- **Identity (POC):** callers name themselves with an `X-Dev-User: <email>` header. `identity.DevHeader` looks the email up (case-insensitively) among active users and puts the `identity.Identity` in the request context; an unknown email gets 401 `{"error": "unknown dev user"}`, and a request without the header carries no identity (handlers that need one return 401). Anyone can send the header, so the API refuses to start with `APP_ENV=production`. Real authentication replaces this in EP07.
 
 ## Configuration
 
 Configuration comes only from environment variables, which are read once at startup in `internal/config`. A variable that is set but invalid makes startup fail.
 
-| Variable               | Default | Meaning                                         |
-| ---------------------- | ------- | ----------------------------------------------- |
-| `API_ADDR`             | `:8080` | Listen address                                  |
-| `API_LOG_LEVEL`        | `info`  | `debug`, `info`, `warn` or `error`              |
-| `API_SHUTDOWN_TIMEOUT` | `15s`   | Maximum time in-flight requests get to drain    |
-| `DB_*`                 |         | PostgreSQL connection; see [database.md](database.md#configuration) |
+| Variable               | Default       | Meaning                                         |
+| ---------------------- | ------------- | ----------------------------------------------- |
+| `APP_ENV`              | `development` | `development`, `test` or `production`; the API refuses to start with `production` while the POC identity mode is the only one |
+| `API_ADDR`             | `:8080`       | Listen address                                  |
+| `API_LOG_LEVEL`        | `info`        | `debug`, `info`, `warn` or `error`              |
+| `API_SHUTDOWN_TIMEOUT` | `15s`         | Maximum time in-flight requests get to drain    |
+| `DB_*`                 |               | PostgreSQL connection; see [database.md](database.md#configuration) |
 
 Secrets (currently just `DB_PASSWORD`) are injected from Kubernetes Secrets as environment variables. Config types that hold secrets implement `String` and `slog.LogValuer` so the secret can't end up in logs.
 
@@ -88,7 +91,7 @@ Secrets (currently just `DB_PASSWORD`) are injected from Kubernetes Secrets as e
 ## Logging and telemetry
 
 - Logs are written with `log/slog` and its JSON handler to stdout.
-- Request middleware emits **one event per request**. This will grow into the wide event described in the README.
+- Request middleware emits **one event per request**: the wide event described in the README. Handlers enrich the request's event with `telemetry.Add(ctx, attrs...)` instead of logging their own lines, and the event's attributes are emitted on the single per-request `http request` log line. OpenTelemetry spans wait for WHS-201.
 - Field names are lowercase, dot-namespaced and snake_case within a segment: `http.method`, `http.route`, `http.status`, `duration_ms`, `warehouse.id`, `stock.below_reorder`. The frontend uses the same names.
 - `http.route` is the matched pattern (`GET /api/v1/items/{sku}`), not the raw path, so it can be grouped on. The raw path goes in `http.path`.
 - Units go in the field name (`_ms`, `_bytes`).

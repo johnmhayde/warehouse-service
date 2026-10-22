@@ -14,6 +14,7 @@ import (
 	"github.com/johnmhayde/warehouse-service/api/internal/config"
 	"github.com/johnmhayde/warehouse-service/api/internal/health"
 	v1 "github.com/johnmhayde/warehouse-service/api/internal/httpapi/v1"
+	"github.com/johnmhayde/warehouse-service/api/internal/identity"
 )
 
 // Server is the API's HTTP server.
@@ -25,8 +26,9 @@ type Server struct {
 }
 
 // New builds a Server with all routes and middleware mounted. It does not
-// start listening; call Run for that.
-func New(cfg config.Config, logger *slog.Logger, hc *health.Checker, items v1.ItemService) *Server {
+// start listening; call Run for that. users resolves the X-Dev-User header
+// (the POC identity mode; see package identity).
+func New(cfg config.Config, logger *slog.Logger, hc *health.Checker, items v1.ItemService, users identity.Users) *Server {
 	mux := http.NewServeMux()
 	hc.Register(mux)
 	v1.Register(mux, items)
@@ -37,7 +39,7 @@ func New(cfg config.Config, logger *slog.Logger, hc *health.Checker, items v1.It
 		health: hc,
 		http: &http.Server{
 			Addr:    cfg.Addr,
-			Handler: logRequests(logger, mux),
+			Handler: handler(logger, users, mux),
 			// http.Server has no timeouts by default, so a slow or idle client
 			// can hold a connection open forever.
 			ReadHeaderTimeout: 5 * time.Second,
@@ -50,6 +52,12 @@ func New(cfg config.Config, logger *slog.Logger, hc *health.Checker, items v1.It
 			// every in-flight request instead of letting them drain.
 		},
 	}
+}
+
+// handler wraps mux in the middleware chain. logRequests is outermost so
+// that requests rejected by the identity middleware are logged too.
+func handler(logger *slog.Logger, users identity.Users, mux *http.ServeMux) http.Handler {
+	return logRequests(logger, identity.DevHeader(users, recordRoute(mux)))
 }
 
 // Run serves HTTP until ctx is cancelled, then shuts down gracefully: it

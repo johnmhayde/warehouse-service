@@ -46,8 +46,14 @@ func run(ctx context.Context, getenv func(string) string, stdout io.Writer) erro
 		return fmt.Errorf("load config: %w", err)
 	}
 
+	// X-Dev-User is the only identity mode until real authentication (EP07),
+	// and anyone can send it, so it must never serve production traffic.
+	if cfg.Env == config.EnvProduction {
+		return fmt.Errorf("POC identity mode (X-Dev-User header) must not run with APP_ENV=%s", config.EnvProduction)
+	}
+
 	logger := slog.New(slog.NewJSONHandler(stdout, &slog.HandlerOptions{Level: cfg.LogLevel}))
-	logger.Info("config loaded", "db", cfg.Database)
+	logger.Info("config loaded", "env", cfg.Env, "db", cfg.Database)
 
 	pool, err := postgres.NewPool(ctx, cfg.Database.ConnString(), "warehouse-api")
 	if err != nil {
@@ -66,6 +72,6 @@ func run(ctx context.Context, getenv func(string) string, stdout io.Writer) erro
 	)
 	items := inventory.NewService(store)
 
-	srv := server.New(cfg, logger, hc, items)
+	srv := server.New(cfg, logger, hc, items, postgres.NewUsers(pool))
 	return srv.Run(ctx)
 }

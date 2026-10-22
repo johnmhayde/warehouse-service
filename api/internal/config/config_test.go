@@ -30,6 +30,9 @@ func TestLoadDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
+	if cfg.Env != "development" {
+		t.Errorf("Env = %q, want %q", cfg.Env, "development")
+	}
 	if cfg.Addr != ":8080" {
 		t.Errorf("Addr = %q, want %q", cfg.Addr, ":8080")
 	}
@@ -43,12 +46,16 @@ func TestLoadDefaults(t *testing.T) {
 
 func TestLoadOverrides(t *testing.T) {
 	cfg, err := Load(env(withDB(map[string]string{
+		"APP_ENV":              "production",
 		"API_ADDR":             "127.0.0.1:9000",
 		"API_LOG_LEVEL":        "debug",
 		"API_SHUTDOWN_TIMEOUT": "3s",
 	})))
 	if err != nil {
 		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Env != "production" {
+		t.Errorf("Env = %q", cfg.Env)
 	}
 	if cfg.Addr != "127.0.0.1:9000" {
 		t.Errorf("Addr = %q", cfg.Addr)
@@ -63,6 +70,8 @@ func TestLoadOverrides(t *testing.T) {
 
 func TestLoadInvalid(t *testing.T) {
 	tests := map[string]map[string]string{
+		"unknown env":           {"APP_ENV": "staging"},
+		"env wrong case":        {"APP_ENV": "Production"},
 		"bad log level":         {"API_LOG_LEVEL": "loud"},
 		"bad duration":          {"API_SHUTDOWN_TIMEOUT": "soon"},
 		"non-positive duration": {"API_SHUTDOWN_TIMEOUT": "0s"},
@@ -71,6 +80,20 @@ func TestLoadInvalid(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			if _, err := Load(env(withDB(vars))); err == nil {
 				t.Fatal("Load succeeded, want error")
+			}
+		})
+	}
+}
+
+func TestLoadEnvValues(t *testing.T) {
+	for _, v := range []string{"development", "test", "production"} {
+		t.Run(v, func(t *testing.T) {
+			cfg, err := Load(env(withDB(map[string]string{"APP_ENV": v})))
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if cfg.Env != v {
+				t.Errorf("Env = %q, want %q", cfg.Env, v)
 			}
 		})
 	}
