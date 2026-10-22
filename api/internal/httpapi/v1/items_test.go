@@ -39,9 +39,9 @@ func serve(t *testing.T, items ItemService, path string) *httptest.ResponseRecor
 }
 
 func TestGetItemFound(t *testing.T) {
-	items := &fakeItems{item: inventory.Item{SKU: "SKU-1", Name: "Pallet jack", Quantity: 3}}
+	items := &fakeItems{item: inventory.Item{SKU: "123456", Name: "Pallet jack", Quantity: 3}}
 
-	rec := serve(t, items, "/api/v1/items/SKU-1")
+	rec := serve(t, items, "/api/v1/items/123456")
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
@@ -49,15 +49,15 @@ func TestGetItemFound(t *testing.T) {
 	if got := rec.Header().Get("Content-Type"); got != "application/json" {
 		t.Errorf("Content-Type = %q, want application/json", got)
 	}
-	if items.gotSKU != "SKU-1" {
-		t.Errorf("service called with SKU %q, want %q", items.gotSKU, "SKU-1")
+	if items.gotSKU != "123456" {
+		t.Errorf("service called with SKU %q, want %q", items.gotSKU, "123456")
 	}
 
 	var body itemResponse
 	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
 		t.Fatalf("decode body: %v", err)
 	}
-	want := itemResponse{SKU: "SKU-1", Name: "Pallet jack", Quantity: 3}
+	want := itemResponse{SKU: "123456", Name: "Pallet jack", Quantity: 3}
 	if body != want {
 		t.Errorf("body = %+v, want %+v", body, want)
 	}
@@ -72,10 +72,12 @@ func TestGetItemErrors(t *testing.T) {
 		wantError  string
 	}{
 		{"invalid sku", "/api/v1/items/bad%20sku", nil, http.StatusBadRequest, "invalid SKU"},
-		{"lowercase sku", "/api/v1/items/sku-1", nil, http.StatusBadRequest, "invalid SKU"},
-		{"not found", "/api/v1/items/SKU-1", inventory.ErrNotFound, http.StatusNotFound, "item not found"},
-		{"wrapped not found", "/api/v1/items/SKU-1", wrap(inventory.ErrNotFound), http.StatusNotFound, "item not found"},
-		{"store failure", "/api/v1/items/SKU-1", errors.New("db down: connection refused"), http.StatusInternalServerError, "internal error"},
+		{"old-format sku", "/api/v1/items/SKU-00921", nil, http.StatusBadRequest, "invalid SKU"},
+		{"five-digit sku", "/api/v1/items/12345", nil, http.StatusBadRequest, "invalid SKU"},
+		{"seven-digit sku", "/api/v1/items/1234567", nil, http.StatusBadRequest, "invalid SKU"},
+		{"not found", "/api/v1/items/123456", inventory.ErrNotFound, http.StatusNotFound, "item not found"},
+		{"wrapped not found", "/api/v1/items/123456", wrap(inventory.ErrNotFound), http.StatusNotFound, "item not found"},
+		{"store failure", "/api/v1/items/123456", errors.New("db down: connection refused"), http.StatusInternalServerError, "internal error"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -99,7 +101,7 @@ func TestGetItemErrors(t *testing.T) {
 }
 
 func TestGetItemDoesNotLeakInternalErrors(t *testing.T) {
-	rec := serve(t, &fakeItems{err: errors.New("db down: connection refused")}, "/api/v1/items/SKU-1")
+	rec := serve(t, &fakeItems{err: errors.New("db down: connection refused")}, "/api/v1/items/123456")
 
 	if strings.Contains(rec.Body.String(), "db down") {
 		t.Errorf("response body leaks internal error: %s", rec.Body.String())

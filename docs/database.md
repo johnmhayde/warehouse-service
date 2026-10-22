@@ -167,7 +167,7 @@ users ──< stock_adjustments >── products
 | Column | Type | Notes |
 | ------ | ---- | ----- |
 | `id` | `bigint` identity | Primary key |
-| `sku` | `text` | Unique; `^[A-Z0-9-]{1,64}$`, the same rule as `inventory.ParseSKU` |
+| `sku` | `text` | Unique; exactly six ASCII digits (`^[0-9]{6}$`, leading zeros allowed), the same rule as `inventory.ParseSKU` ([ADR 0002](adr/0002-six-digit-skus.md)) |
 | `name` | `text` | Non-blank; trigram-indexed for `ILIKE '%term%'` search |
 | `description` | `text` | Default `''` |
 | `category` | `text`, nullable | NULL means uncategorized; indexed |
@@ -176,7 +176,7 @@ users ──< stock_adjustments >── products
 | `active` | `boolean` | Default `true`; indexed |
 | `created_at`, `updated_at` | `timestamptz` | A trigger keeps `updated_at` current |
 
-**`stock_adjustments`**: the audit history of stock changes. Rows are only ever inserted.
+**`stock_adjustments`**: the audit history of stock changes. Rows are only ever inserted. Exception: migration 00006 deleted the history of products with non-conforming SKUs, together with those products ([ADR 0002](adr/0002-six-digit-skus.md)).
 
 | Column | Type | Notes |
 | ------ | ---- | ----- |
@@ -194,12 +194,12 @@ Conventions used throughout:
 
 - **Named constraints.** Every constraint has an explicit name (`<table>_<column>_<rule>`). The API can then map a violation to a specific error, and tests can check which rule fired.
 - **Check constraints instead of enum types** for small value sets like `role`, because a check constraint is easier to change later.
-- **`RESTRICT` on foreign keys.** Products and users with history are deactivated, never deleted, so the audit trail stays intact.
+- **`RESTRICT` on foreign keys.** Products and users with history are deactivated, never deleted, so the audit trail stays intact. Exception: migration 00006 deleted products with non-conforming SKUs and their history ([ADR 0002](adr/0002-six-digit-skus.md)).
 - **Constraint tests.** Each constraint has an integration test in `api/migrations/schema_test.go`.
 
 ## Writing a migration
 
-1. Add the next numbered file to `api/migrations/`, e.g. `00006_add_product_unit.sql`:
+1. Add the next numbered file to `api/migrations/`, e.g. `00007_add_product_unit.sql`:
    ```sql
    -- +goose Up
    ALTER TABLE products ADD COLUMN unit text NOT NULL DEFAULT 'each';

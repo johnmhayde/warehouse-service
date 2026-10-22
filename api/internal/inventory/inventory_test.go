@@ -2,16 +2,15 @@ package inventory
 
 import (
 	"errors"
-	"strings"
 	"testing"
 )
 
 func TestParseSKU(t *testing.T) {
 	valid := []string{
-		"SKU-00921",
+		"123456",
 		"000123",
-		"A",
-		strings.Repeat("A", 64),
+		"000000",
+		"999999",
 	}
 	for _, s := range valid {
 		t.Run("valid "+s, func(t *testing.T) {
@@ -26,12 +25,23 @@ func TestParseSKU(t *testing.T) {
 	}
 
 	invalid := map[string]string{
-		"empty":     "",
-		"lowercase": "sku-00921",
-		"space":     "SKU 00921",
-		"symbol":    "SKU_00921",
-		"too long":  strings.Repeat("A", 65),
-		"newline":   "SKU-1\n",
+		"empty":                 "",
+		"five digits":           "12345",
+		"seven digits":          "1234567",
+		"letter":                "12345a",
+		"uppercase letters":     "ABCDEF",
+		"old format":            "SKU-00921",
+		"minus sign":            "-12345",
+		"plus sign":             "+12345",
+		"leading space":         " 123456",
+		"trailing space":        "123456 ",
+		"inner space":           "123 456",
+		"trailing newline":      "123456\n",
+		"leading newline":       "\n123456",
+		"two SKUs on two lines": "123456\n654321",
+		"arabic-indic digits":   "١٢٣٤٥٦",
+		"fullwidth digits":      "１２３４５６",
+		"one fullwidth digit":   "12345６",
 	}
 	for name, s := range invalid {
 		t.Run("invalid "+name, func(t *testing.T) {

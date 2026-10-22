@@ -7,12 +7,16 @@ import (
 	"regexp"
 )
 
-// SKU identifies a stocked item, e.g. "SKU-00921".
+// SKU identifies a stocked item. It is exactly six ASCII digits, e.g.
+// "123456". Leading zeros are part of the SKU ("000123"), so it is a
+// string, never a number.
 type SKU string
 
-var skuPattern = regexp.MustCompile(`^[A-Z0-9-]{1,64}$`)
+// skuPattern must match the products_sku_format constraint in api/migrations.
+var skuPattern = regexp.MustCompile(`^[0-9]{6}$`)
 
-// ParseSKU validates s and returns it as a SKU.
+// ParseSKU validates s and returns it as a SKU. s must be exactly six ASCII
+// digits.
 func ParseSKU(s string) (SKU, error) {
 	if !skuPattern.MatchString(s) {
 		return "", ErrInvalidSKU
