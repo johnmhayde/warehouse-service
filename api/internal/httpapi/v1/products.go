@@ -125,17 +125,16 @@ func (h *handler) createProduct(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, newProductResponse(product))
 }
 
-// getProduct handles GET /api/v1/products/{id}. Any identified caller may
-// use it; the service hides inactive products from non-admins.
+// getProduct handles GET /api/v1/products/{id}. It needs no identity: a
+// caller without one is the zero (anonymous, non-admin) Actor. The service
+// hides inactive products from non-admins.
 func (h *handler) getProduct(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	id, ok := identity.From(ctx)
-	if !ok {
-		addProductOutcome(ctx, "unauthenticated")
-		writeError(w, http.StatusUnauthorized, "authentication required")
-		return
+	var actor inventory.Actor
+	if id, ok := identity.From(ctx); ok {
+		telemetry.Add(ctx, slog.Int64("user.id", id.UserID))
+		actor = inventory.Actor{UserID: id.UserID, Admin: id.IsAdmin()}
 	}
-	telemetry.Add(ctx, slog.Int64("user.id", id.UserID))
 
 	productID, ok := parseProductID(r.PathValue("id"))
 	if !ok {
@@ -145,7 +144,7 @@ func (h *handler) getProduct(w http.ResponseWriter, r *http.Request) {
 	}
 	telemetry.Add(ctx, slog.Int64("product.id", productID))
 
-	product, err := h.products.GetProduct(ctx, inventory.Actor{UserID: id.UserID, Admin: id.IsAdmin()}, productID)
+	product, err := h.products.GetProduct(ctx, actor, productID)
 	switch {
 	case errors.Is(err, inventory.ErrNotFound):
 		addProductOutcome(ctx, "not_found")

@@ -3,6 +3,7 @@ package inventory
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -143,19 +144,22 @@ func TestCreateProductForbidden(t *testing.T) {
 		// The role is checked first, so a requester can't probe the rules.
 		{"invalid product", NewProduct{SKU: "123456"}},
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			repo := &fakeProducts{}
+	// The zero Actor is anonymous and must never pass the admin check.
+	for _, actor := range []Actor{requester, {}} {
+		for _, tt := range tests {
+			t.Run(fmt.Sprintf("%+v %s", actor, tt.name), func(t *testing.T) {
+				repo := &fakeProducts{}
 
-			_, err := NewProductService(repo).CreateProduct(context.Background(), requester, tt.in)
+				_, err := NewProductService(repo).CreateProduct(context.Background(), actor, tt.in)
 
-			if !errors.Is(err, ErrForbidden) {
-				t.Errorf("CreateProduct error = %v, want ErrForbidden", err)
-			}
-			if repo.called {
-				t.Error("repository called for a non-admin")
-			}
-		})
+				if !errors.Is(err, ErrForbidden) {
+					t.Errorf("CreateProduct error = %v, want ErrForbidden", err)
+				}
+				if repo.called {
+					t.Error("repository called for a non-admin")
+				}
+			})
+		}
 	}
 }
 
@@ -195,11 +199,13 @@ func TestGetProduct(t *testing.T) {
 		wantErr error
 	}{
 		{"requester, active", requester, active, nil},
+		{"anonymous, active", Actor{}, active, nil},
 		{"admin, active", admin, active, nil},
 		{"admin, inactive", admin, inactive, nil},
 		// Inactive products are hidden from everyone but admins, as if
 		// they didn't exist.
 		{"requester, inactive", requester, inactive, ErrHidden},
+		{"anonymous, inactive", Actor{}, inactive, ErrHidden},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

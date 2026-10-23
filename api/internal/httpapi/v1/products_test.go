@@ -484,7 +484,6 @@ func TestGetProductErrors(t *testing.T) {
 		// wantHidden is set when product.hidden should be on the event.
 		wantHidden bool
 	}{
-		{"no identity", nil, "/api/v1/products/42", nil, http.StatusUnauthorized, "authentication required", "unauthenticated", false, false},
 		{"not a number", &requesterID, "/api/v1/products/abc", nil, http.StatusBadRequest, "invalid product id", "invalid", false, false},
 		{"SKU instead of id", &requesterID, "/api/v1/products/SKU-00921", nil, http.StatusBadRequest, "invalid product id", "invalid", false, false},
 		{"zero", &requesterID, "/api/v1/products/0", nil, http.StatusBadRequest, "invalid product id", "invalid", false, false},
@@ -501,6 +500,8 @@ func TestGetProductErrors(t *testing.T) {
 		// Same response as not found; only the event tells them apart.
 		{"hidden", &requesterID, "/api/v1/products/42", inventory.ErrHidden, http.StatusNotFound, "product not found", "not_found", true, true},
 		{"wrapped hidden", &requesterID, "/api/v1/products/42", fmt.Errorf("get: %w", inventory.ErrHidden), http.StatusNotFound, "product not found", "not_found", true, true},
+		{"anonymous, hidden", nil, "/api/v1/products/42", inventory.ErrHidden, http.StatusNotFound, "product not found", "not_found", true, true},
+		{"anonymous, invalid id", nil, "/api/v1/products/abc", nil, http.StatusBadRequest, "invalid product id", "invalid", false, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -535,6 +536,28 @@ func TestGetProductErrors(t *testing.T) {
 				t.Errorf("event user.id = %v (present %v), want the caller's id", got, ok)
 			}
 		})
+	}
+}
+
+// TestGetProductAnonymous checks that the route needs no identity: the
+// service is called with the zero Actor and the event has no user.id.
+func TestGetProductAnonymous(t *testing.T) {
+	products := &fakeProducts{product: inventory.Product{ID: 42, SKU: "000123", Name: "Pallet jack", Active: true}}
+
+	rec, event := getProduct(t, products, nil, "/api/v1/products/42")
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body %s", rec.Code, http.StatusOK, rec.Body)
+	}
+	if !products.called || products.gotActor != (inventory.Actor{}) {
+		t.Errorf("service called = %v with actor %+v, want the zero Actor", products.called, products.gotActor)
+	}
+	attrs := eventAttrs(t, event)
+	if _, ok := attrs["user.id"]; ok {
+		t.Error("event has user.id for an anonymous request")
+	}
+	if got := attrs["product.outcome"].String(); got != "found" {
+		t.Errorf("event product.outcome = %q, want found", got)
 	}
 }
 
@@ -586,21 +609,24 @@ func TestGetProductDoesNotLeakInternalErrors(t *testing.T) {
 func TestGetProductWithService(t *testing.T) {
 	tests := []struct {
 		name       string
-		id         identity.Identity
+		id         *identity.Identity
 		path       string
 		wantStatus int
 		wantHidden bool
 	}{
-		{"requester, active", requesterID, "/api/v1/products/1", http.StatusOK, false},
-		{"admin, active", adminID, "/api/v1/products/1", http.StatusOK, false},
-		{"requester, inactive", requesterID, "/api/v1/products/2", http.StatusNotFound, true},
-		{"admin, inactive", adminID, "/api/v1/products/2", http.StatusOK, false},
-		{"requester, unknown", requesterID, "/api/v1/products/3", http.StatusNotFound, false},
-		{"admin, unknown", adminID, "/api/v1/products/3", http.StatusNotFound, false},
+		{"requester, active", &requesterID, "/api/v1/products/1", http.StatusOK, false},
+		{"admin, active", &adminID, "/api/v1/products/1", http.StatusOK, false},
+		{"requester, inactive", &requesterID, "/api/v1/products/2", http.StatusNotFound, true},
+		{"admin, inactive", &adminID, "/api/v1/products/2", http.StatusOK, false},
+		{"requester, unknown", &requesterID, "/api/v1/products/3", http.StatusNotFound, false},
+		{"admin, unknown", &adminID, "/api/v1/products/3", http.StatusNotFound, false},
+		{"anonymous, active", nil, "/api/v1/products/1", http.StatusOK, false},
+		{"anonymous, inactive", nil, "/api/v1/products/2", http.StatusNotFound, true},
+		{"anonymous, unknown", nil, "/api/v1/products/3", http.StatusNotFound, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			rec, event := getProduct(t, inventory.NewProductService(stubRepository{}), &tt.id, tt.path)
+			rec, event := getProduct(t, inventory.NewProductService(stubRepository{}), tt.id, tt.path)
 
 			if _, ok := eventAttrs(t, event)["product.hidden"]; ok != tt.wantHidden {
 				t.Errorf("event has product.hidden = %v, want %v", ok, tt.wantHidden)

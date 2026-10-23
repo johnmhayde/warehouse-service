@@ -149,7 +149,7 @@ Everything runs through `docker compose`. You don't need Go installed.
 - It's not a migration. The SQL lives in `dev/seed/seed.sql`, outside `api/`, so it's never embedded in the `migrate` binary or copied into any image, and CI never runs it.
 - The `seed` service runs that file with the stock `postgres:17-alpine` image's `psql`, using the same `DB_*` credentials as the rest of the compose stack. It runs with `ON_ERROR_STOP=1` in a single transaction, so it applies completely or not at all.
 - `docker compose up` doesn't run it (it's behind the `seed` profile), and the API doesn't depend on it, so the stack starts with an empty database unless you ask for data. `run --rm --build seed` starts Postgres and applies migrations first.
-- The API serves the seeded products from Postgres by id, e.g. `curl -H 'X-Dev-User: robin@example.com' localhost:8080/api/v1/products/1` (on a fresh database the seed's products get ids 1–20). All seeded rows can also be inspected through psql (`docker compose exec postgres psql -U warehouse`).
+- The API serves the seeded products from Postgres by id, e.g. `curl localhost:8080/api/v1/products/1` (on a fresh database the seed's products get ids 1–20). All seeded rows can also be inspected through psql (`docker compose exec postgres psql -U warehouse`).
 
 It inserts:
 

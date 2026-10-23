@@ -77,7 +77,8 @@ func (e *ValidationError) Error() string {
 }
 
 // Actor is who a service call is made on behalf of. The HTTP layer builds
-// it from the request's identity.
+// it from the request's identity. The zero Actor is an anonymous caller:
+// no user, and not an admin.
 type Actor struct {
 	UserID int64
 	Admin  bool
@@ -120,9 +121,10 @@ func (s *ProductService) CreateProduct(ctx context.Context, actor Actor, p NewPr
 	return s.repo.CreateProduct(ctx, actor.UserID, p)
 }
 
-// GetProduct returns the product with this id. Inactive products are
-// retired from normal use, so only admins see them: anyone else gets
-// ErrHidden, which wraps ErrNotFound like an id that doesn't exist.
+// GetProduct returns the product with this id. Anyone may call it,
+// including an anonymous (zero) actor. Inactive products are retired from
+// normal use, so only admins see them: anyone else gets ErrHidden, which
+// wraps ErrNotFound like an id that doesn't exist.
 func (s *ProductService) GetProduct(ctx context.Context, actor Actor, id int64) (Product, error) {
 	p, err := s.repo.GetProduct(ctx, id)
 	if err != nil {

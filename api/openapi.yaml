@@ -22,9 +22,10 @@ info:
     header, so on any of them a header that names no active user gets
     `401 {"error": "unknown dev user"}`, and a failed lookup gets
     `500 {"error": "internal error"}`. `/healthz` and `/readyz` ignore the
-    header. Without the header a request carries no identity; only
-    endpoints that declare `devUser` security need one. Real authentication
-    replaces this in EP07.
+    header. Without the header a request carries no identity. Endpoints
+    whose security lists only `devUser` need one (401 without it);
+    endpoints that also list `{}` (no security) serve anonymous callers.
+    Real authentication replaces this in EP07.
 
     Admin endpoints live under `/api/v1/admin`.
 servers:
@@ -44,15 +45,18 @@ paths:
       operationId: getProduct
       summary: Get a product by id
       description: |
-        Returns one product by its numeric id. Any identified caller may use
-        it. Inactive products are only visible to admins: anyone else gets
-        the same `404 product not found` as for an id that doesn't exist.
+        Returns one product by its numeric id. No identity is needed: the
+        `X-Dev-User` header is optional, and a request without it is served
+        as an anonymous, non-admin caller. Inactive products are only
+        visible to admins: non-admins and anonymous callers get the same
+        `404 product not found` as for an id that doesn't exist.
 
-        Checks run in this order: the caller must be identified (401), then
-        the id must be valid (400), then the product must exist and be
-        visible to the caller (404).
+        Checks run in this order: a header that is sent must name an active
+        user (401), then the id must be valid (400), then the product must
+        exist and be visible to the caller (404).
       tags: [products]
       security:
+        - {}
         - devUser: []
       parameters:
         - $ref: '#/components/parameters/ProductID'
@@ -85,25 +89,18 @@ paths:
                 error: invalid product id
         '401':
           description: |
-            No `X-Dev-User` header was sent, or it names no active user
-            (`unknown dev user`, from the identity middleware).
+            An `X-Dev-User` header was sent but names no active user (from
+            the identity middleware). Omitting the header is not an error.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
-              examples:
-                noIdentity:
-                  summary: No X-Dev-User header
-                  value:
-                    error: authentication required
-                unknownUser:
-                  summary: X-Dev-User names no active user
-                  value:
-                    error: unknown dev user
+              example:
+                error: unknown dev user
         '404':
           description: |
             No product has this id, or the product is inactive and the caller
-            is not an admin.
+            is not an admin (a non-admin user or an anonymous caller).
           content:
             application/json:
               schema:

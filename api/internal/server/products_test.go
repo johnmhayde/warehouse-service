@@ -143,7 +143,9 @@ func TestGetProductEndToEnd(t *testing.T) {
 		{"requester, inactive", "requester@example.com", inactiveID, http.StatusNotFound, `{"error":"product not found"}`},
 		{"admin, inactive", "admin@example.com", inactiveID, http.StatusOK, `"active":false`},
 		{"unknown id", "admin@example.com", inactiveID + 1000, http.StatusNotFound, `{"error":"product not found"}`},
-		{"no identity", "", activeID, http.StatusUnauthorized, `{"error":"authentication required"}`},
+		{"no identity, active", "", activeID, http.StatusOK, `"sku":"000123","name":"Pallet jack"`},
+		{"no identity, inactive", "", inactiveID, http.StatusNotFound, `{"error":"product not found"}`},
+		{"unknown dev user", "nobody@example.com", activeID, http.StatusUnauthorized, `{"error":"unknown dev user"}`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
