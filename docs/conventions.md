@@ -58,7 +58,7 @@ Rules:
 
 ## HTTP
 
-- **Versioning:** public endpoints live under `/api/v1`. A breaking change gets a new `httpapi/v2` package mounted at `/api/v2`, next to v1 and reusing the same domain services. Additive changes (new fields, new endpoints) stay in the current version.
+- **Versioning:** public endpoints live under `/api/v1`. A breaking change gets a new `httpapi/v2` package mounted at `/api/v2`, next to v1 and reusing the same domain services. Exception: until v1 has its first consumer, breaking changes stay in v1 ([ADR 0003](adr/0003-rental-model-and-reservation-visibility.md)). Additive changes (new fields, new endpoints) stay in the current version.
 - **Infrastructure endpoints aren't versioned:** `/healthz` (liveness) and `/readyz` (readiness).
 - **Routing:** use the standard library `http.ServeMux` with method + path patterns (`"GET /api/v1/items/{sku}"`). Read path values with `r.PathValue("sku")`.
 - **Contract:** [`api/openapi.yaml`](../api/openapi.yaml) (OpenAPI 3.1) describes every endpoint the code serves: status codes, JSON field names and error bodies. The handlers are the source of truth; a change that adds an endpoint or changes a status code, field or error body updates the spec in the same PR. Planned endpoints don't go in it until they exist. Lint it without a local install with `docker run --rm -v "$PWD/api:/spec" redocly/cli lint /spec/openapi.yaml`.
