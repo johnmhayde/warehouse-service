@@ -38,9 +38,10 @@ func (s *Store) GetItem(ctx context.Context, sku inventory.SKU) (inventory.Item,
 	return item, nil
 }
 
-// CreateProduct stores p with the same defaults as the products table: no
-// stock, active, and both timestamps set to now.
-func (s *Store) CreateProduct(ctx context.Context, p inventory.NewProduct) (inventory.Product, error) {
+// CreateProduct stores p with the same defaults as the products table:
+// active, and both timestamps set to now. It keeps no stock adjustment
+// history, so actorID is unused.
+func (s *Store) CreateProduct(ctx context.Context, actorID int64, p inventory.NewProduct) (inventory.Product, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -50,14 +51,15 @@ func (s *Store) CreateProduct(ctx context.Context, p inventory.NewProduct) (inve
 	s.lastProductID++
 	now := time.Now()
 	product := inventory.Product{
-		ID:          s.lastProductID,
-		SKU:         p.SKU,
-		Name:        p.Name,
-		Description: p.Description,
-		Category:    p.Category,
-		Active:      true,
-		CreatedAt:   now,
-		UpdatedAt:   now,
+		ID:            s.lastProductID,
+		SKU:           p.SKU,
+		Name:          p.Name,
+		Description:   p.Description,
+		Category:      p.Category,
+		TotalQuantity: p.TotalQuantity,
+		Active:        true,
+		CreatedAt:     now,
+		UpdatedAt:     now,
 	}
 	if p.ReorderThreshold != nil {
 		// Copied so the caller can't change the stored product.

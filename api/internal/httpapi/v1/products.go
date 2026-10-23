@@ -17,6 +17,7 @@ type createProductRequest struct {
 	Name             string `json:"name"`
 	Description      string `json:"description"`
 	Category         string `json:"category"`
+	TotalQuantity    int    `json:"total_quantity"`
 	ReorderThreshold *int   `json:"reorder_threshold"`
 }
 
@@ -83,7 +84,10 @@ func (h *handler) createProduct(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid SKU")
 		return
 	}
-	telemetry.Add(ctx, slog.String("product.sku", string(sku)))
+	telemetry.Add(ctx,
+		slog.String("product.sku", string(sku)),
+		slog.Int("product.total_quantity", req.TotalQuantity),
+	)
 
 	product, err := h.products.CreateProduct(ctx,
 		inventory.Actor{UserID: id.UserID, Admin: id.IsAdmin()},
@@ -92,6 +96,7 @@ func (h *handler) createProduct(w http.ResponseWriter, r *http.Request) {
 			Name:             req.Name,
 			Description:      req.Description,
 			Category:         req.Category,
+			TotalQuantity:    req.TotalQuantity,
 			ReorderThreshold: req.ReorderThreshold,
 		},
 	)

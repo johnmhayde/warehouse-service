@@ -3,8 +3,11 @@ package postgres
 import (
 	"context"
 	"errors"
+	"reflect"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/johnmhayde/warehouse-service/api/internal/inventory"
 	"github.com/johnmhayde/warehouse-service/api/internal/pgtest"
@@ -31,7 +34,7 @@ func TestProductsCreateProduct(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			before := time.Now()
 
-			got, err := products.CreateProduct(ctx, tt.in)
+			got, err := products.CreateProduct(ctx, 1, tt.in)
 			if err != nil {
 				t.Fatalf("CreateProduct: %v", err)
 			}
@@ -58,11 +61,108 @@ func TestProductsCreateProduct(t *testing.T) {
 	}
 }
 
+// stockAdjustment is a stock_adjustments row, without its id and
+// created_at.
+type stockAdjustment struct {
+	delta, quantityAfter int
+	reason               string
+	actorID              int64
+}
+
+// adjustmentsOf returns productID's stock adjustments, oldest first.
+func adjustmentsOf(t *testing.T, pool *pgxpool.Pool, productID int64) []stockAdjustment {
+	t.Helper()
+	rows, err := pool.Query(context.Background(),
+		"SELECT delta, quantity_after, reason, actor_id FROM stock_adjustments WHERE product_id = $1 ORDER BY id", productID)
+	if err != nil {
+		t.Fatalf("query stock_adjustments: %v", err)
+	}
+	defer rows.Close()
+	var out []stockAdjustment
+	for rows.Next() {
+		var a stockAdjustment
+		if err := rows.Scan(&a.delta, &a.quantityAfter, &a.reason, &a.actorID); err != nil {
+			t.Fatalf("scan stock_adjustments: %v", err)
+		}
+		out = append(out, a)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("read stock_adjustments: %v", err)
+	}
+	return out
+}
+
+func TestProductsCreateProductInitialStock(t *testing.T) {
+	pool := pgtest.Migrated(t)
+	ctx := context.Background()
+	products := NewProducts(pool)
+
+	var adminID int64
+	if err := pool.QueryRow(ctx,
+		"INSERT INTO users (email, display_name, role) VALUES ('admin@example.com', 'Admin', 'admin') RETURNING id",
+	).Scan(&adminID); err != nil {
+		t.Fatalf("insert user: %v", err)
+	}
+
+	tests := []struct {
+		name            string
+		sku             inventory.SKU
+		totalQuantity   int
+		wantAdjustments []stockAdjustment
+	}{
+		{"no stock", "123456", 0, nil},
+		{"initial stock", "654321", 12, []stockAdjustment{{delta: 12, quantityAfter: 12, reason: "Initial stock", actorID: adminID}}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := products.CreateProduct(ctx, adminID, inventory.NewProduct{SKU: tt.sku, Name: "Pallet jack", TotalQuantity: tt.totalQuantity})
+			if err != nil {
+				t.Fatalf("CreateProduct: %v", err)
+			}
+
+			if got.TotalQuantity != tt.totalQuantity {
+				t.Errorf("TotalQuantity = %d, want %d", got.TotalQuantity, tt.totalQuantity)
+			}
+			var stored int
+			if err := pool.QueryRow(ctx, "SELECT total_quantity FROM products WHERE id = $1", got.ID).Scan(&stored); err != nil {
+				t.Fatalf("query total_quantity: %v", err)
+			}
+			if stored != tt.totalQuantity {
+				t.Errorf("stored total_quantity = %d, want %d", stored, tt.totalQuantity)
+			}
+			if adj := adjustmentsOf(t, pool, got.ID); !reflect.DeepEqual(adj, tt.wantAdjustments) {
+				t.Errorf("stock adjustments = %+v, want %+v", adj, tt.wantAdjustments)
+			}
+		})
+	}
+}
+
+// TestProductsCreateProductInitialStockIsAtomic checks that a product isn't
+// created when its initial stock adjustment can't be written.
+func TestProductsCreateProductInitialStockIsAtomic(t *testing.T) {
+	pool := pgtest.Migrated(t)
+	ctx := context.Background()
+
+	// No user has this id, so the adjustment breaks stock_adjustments_actor_fk.
+	_, err := NewProducts(pool).CreateProduct(ctx, 999, inventory.NewProduct{SKU: "123456", Name: "Pallet jack", TotalQuantity: 5})
+	if err == nil {
+		t.Fatal("CreateProduct succeeded with an unknown actor, want an error")
+	}
+
+	var count int
+	if err := pool.QueryRow(ctx, "SELECT count(*) FROM products").Scan(&count); err != nil {
+		t.Fatalf("count products: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("products = %d, want 0 (the insert rolled back)", count)
+	}
+}
+
 func TestProductsCreateProductStoresUncategorizedAsNull(t *testing.T) {
 	pool := pgtest.Migrated(t)
 	ctx := context.Background()
 
-	p, err := NewProducts(pool).CreateProduct(ctx, inventory.NewProduct{SKU: "123456", Name: "Pallet jack"})
+	p, err := NewProducts(pool).CreateProduct(ctx, 1, inventory.NewProduct{SKU: "123456", Name: "Pallet jack"})
 	if err != nil {
 		t.Fatalf("CreateProduct: %v", err)
 	}
@@ -81,10 +181,10 @@ func TestProductsCreateProductDuplicateSKU(t *testing.T) {
 	ctx := context.Background()
 	products := NewProducts(pool)
 
-	if _, err := products.CreateProduct(ctx, inventory.NewProduct{SKU: "123456", Name: "Pallet jack"}); err != nil {
+	if _, err := products.CreateProduct(ctx, 1, inventory.NewProduct{SKU: "123456", Name: "Pallet jack"}); err != nil {
 		t.Fatalf("first CreateProduct: %v", err)
 	}
-	_, err := products.CreateProduct(ctx, inventory.NewProduct{SKU: "123456", Name: "Another"})
+	_, err := products.CreateProduct(ctx, 1, inventory.NewProduct{SKU: "123456", Name: "Another"})
 	if !errors.Is(err, inventory.ErrDuplicateSKU) {
 		t.Errorf("CreateProduct error = %v, want ErrDuplicateSKU", err)
 	}

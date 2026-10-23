@@ -198,7 +198,7 @@ users ──< stock_adjustments >── products
 | `name` | `text` | Non-blank; trigram-indexed for `ILIKE '%term%'` search |
 | `description` | `text` | Default `''` |
 | `category` | `text`, nullable | NULL means uncategorized; indexed |
-| `total_quantity` | `integer` | `>= 0`, default 0. Change it only together with a `stock_adjustments` row, in the same transaction |
+| `total_quantity` | `integer` | `>= 0`, default 0. Change it only together with a `stock_adjustments` row, in the same transaction. Creating a product through the API with `total_quantity` above 0 inserts both rows in one transaction, with an `"Initial stock"` adjustment by the creating admin; at 0 there is no adjustment |
 | `reorder_threshold` | `integer`, nullable | `>= 0`. Stock below it counts as low |
 | `active` | `boolean` | Default `true`; indexed |
 | `created_at`, `updated_at` | `timestamptz` | A trigger keeps `updated_at` current |
