@@ -2,9 +2,11 @@ package migrations_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/pressly/goose/v3"
 
@@ -148,6 +150,66 @@ func TestSixDigitSKUMigration(t *testing.T) {
 	}
 	if _, err := db.ExecContext(ctx, `INSERT INTO products (id, sku, name) OVERRIDING SYSTEM VALUE VALUES (100, 'SKU-00921', 'Old format again')`); err != nil {
 		t.Errorf("old-format SKU rejected after rolling back to %d: %v", before, err)
+	}
+}
+
+// TestDropReorderThresholdMigration applies 00007 to a database holding a
+// product with a threshold and checks the column is gone and the product
+// kept. It then rolls 00007 back and checks the column and its constraint
+// are back, with the old values not restored.
+func TestDropReorderThresholdMigration(t *testing.T) {
+	const before, version = 6, 7
+	connString := pgtest.NewDatabase(t)
+	cfg, err := pgx.ParseConfig(connString)
+	if err != nil {
+		t.Fatalf("parse connection string: %v", err)
+	}
+	db := stdlib.OpenDB(*cfg)
+	t.Cleanup(func() { db.Close() })
+	p, err := migrations.NewProvider(db)
+	if err != nil {
+		t.Fatalf("create migration provider: %v", err)
+	}
+	ctx := context.Background()
+
+	if _, err := p.UpTo(ctx, before); err != nil {
+		t.Fatalf("UpTo(%d): %v", before, err)
+	}
+	if _, err := db.ExecContext(ctx, `INSERT INTO products (sku, name, reorder_threshold) VALUES ('123456', 'Folding chair', 5)`); err != nil {
+		t.Fatalf("insert rows at version %d: %v", before, err)
+	}
+
+	if _, err := p.UpTo(ctx, version); err != nil {
+		t.Fatalf("UpTo(%d): %v", version, err)
+	}
+	var columns int
+	if err := db.QueryRowContext(ctx,
+		`SELECT count(*) FROM information_schema.columns WHERE table_name = 'products' AND column_name = 'reorder_threshold'`,
+	).Scan(&columns); err != nil {
+		t.Fatalf("look up column: %v", err)
+	}
+	if columns != 0 {
+		t.Error("products.reorder_threshold still exists after the migration")
+	}
+	var name string
+	if err := db.QueryRowContext(ctx, `SELECT name FROM products WHERE sku = '123456'`).Scan(&name); err != nil {
+		t.Fatalf("read product after migration: %v", err)
+	}
+
+	if _, err := p.DownTo(ctx, before); err != nil {
+		t.Fatalf("DownTo(%d): %v", before, err)
+	}
+	var threshold *int
+	if err := db.QueryRowContext(ctx, `SELECT reorder_threshold FROM products WHERE sku = '123456'`).Scan(&threshold); err != nil {
+		t.Fatalf("read reorder_threshold after rolling back to %d: %v", before, err)
+	}
+	if threshold != nil {
+		t.Errorf("reorder_threshold after rolling back = %d, want NULL", *threshold)
+	}
+	_, err = db.ExecContext(ctx, `UPDATE products SET reorder_threshold = -1 WHERE sku = '123456'`)
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) || pgErr.ConstraintName != "products_reorder_threshold_nonnegative" {
+		t.Errorf("negative threshold after rolling back: err = %v, want a products_reorder_threshold_nonnegative violation", err)
 	}
 }
 

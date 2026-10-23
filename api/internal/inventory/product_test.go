@@ -23,7 +23,7 @@ func (f *fakeProducts) CreateProduct(ctx context.Context, p NewProduct) (Product
 	if f.err != nil {
 		return Product{}, f.err
 	}
-	return Product{ID: 1, SKU: p.SKU, Name: p.Name, Description: p.Description, Category: p.Category, ReorderThreshold: p.ReorderThreshold, Active: true}, nil
+	return Product{ID: 1, SKU: p.SKU, Name: p.Name, Description: p.Description, Category: p.Category, Active: true}, nil
 }
 
 var admin = Actor{UserID: 1, Admin: true}
@@ -50,14 +50,9 @@ func TestCreateProductNormalizes(t *testing.T) {
 			NewProduct{SKU: "123456", Name: "Pallet jack"},
 		},
 		{
-			"zero threshold",
-			NewProduct{SKU: "123456", Name: "Pallet jack", ReorderThreshold: ptr(0)},
-			NewProduct{SKU: "123456", Name: "Pallet jack", ReorderThreshold: ptr(0)},
-		},
-		{
 			"longest allowed fields",
-			NewProduct{SKU: "123456", Name: strings.Repeat("é", 200), Description: strings.Repeat("é", 2000), Category: strings.Repeat("é", 100), ReorderThreshold: ptr(2147483647)},
-			NewProduct{SKU: "123456", Name: strings.Repeat("é", 200), Description: strings.Repeat("é", 2000), Category: strings.Repeat("é", 100), ReorderThreshold: ptr(2147483647)},
+			NewProduct{SKU: "123456", Name: strings.Repeat("é", 200), Description: strings.Repeat("é", 2000), Category: strings.Repeat("é", 100)},
+			NewProduct{SKU: "123456", Name: strings.Repeat("é", 200), Description: strings.Repeat("é", 2000), Category: strings.Repeat("é", 100)},
 		},
 	}
 	for _, tt := range tests {
@@ -88,8 +83,6 @@ func TestCreateProductValidation(t *testing.T) {
 		{"NUL in name", NewProduct{SKU: "123456", Name: "a\x00b"}, "name must not contain NUL characters"},
 		{"NUL in description", NewProduct{SKU: "123456", Name: "x", Description: "a\x00"}, "description must not contain NUL characters"},
 		{"NUL in category", NewProduct{SKU: "123456", Name: "x", Category: "\x00a"}, "category must not contain NUL characters"},
-		{"negative threshold", NewProduct{SKU: "123456", Name: "x", ReorderThreshold: ptr(-1)}, "reorder_threshold must be between 0 and 2147483647"},
-		{"threshold too large", NewProduct{SKU: "123456", Name: "x", ReorderThreshold: ptr(2147483648)}, "reorder_threshold must be between 0 and 2147483647"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -145,5 +138,3 @@ func TestCreateProductRepositoryError(t *testing.T) {
 		t.Errorf("CreateProduct error = %v, want ErrDuplicateSKU", err)
 	}
 }
-
-func ptr(n int) *int { return &n }

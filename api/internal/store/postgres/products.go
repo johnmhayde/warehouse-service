@@ -29,12 +29,12 @@ func (s *Products) CreateProduct(ctx context.Context, p inventory.NewProduct) (i
 		category *string
 	)
 	err := s.pool.QueryRow(ctx,
-		`INSERT INTO products (sku, name, description, category, reorder_threshold)
-		VALUES ($1, $2, $3, NULLIF($4, ''), $5)
-		RETURNING id, sku, name, description, category, total_quantity, reorder_threshold, active, created_at, updated_at`,
-		string(p.SKU), p.Name, p.Description, p.Category, p.ReorderThreshold,
+		`INSERT INTO products (sku, name, description, category)
+		VALUES ($1, $2, $3, NULLIF($4, ''))
+		RETURNING id, sku, name, description, category, total_quantity, active, created_at, updated_at`,
+		string(p.SKU), p.Name, p.Description, p.Category,
 	).Scan(&out.ID, &out.SKU, &out.Name, &out.Description, &category, &out.TotalQuantity,
-		&out.ReorderThreshold, &out.Active, &out.CreatedAt, &out.UpdatedAt)
+		&out.Active, &out.CreatedAt, &out.UpdatedAt)
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) && pgErr.Code == uniqueViolation && pgErr.ConstraintName == "products_sku_key" {
 		return inventory.Product{}, inventory.ErrDuplicateSKU

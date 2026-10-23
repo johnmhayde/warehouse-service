@@ -40,13 +40,11 @@ func TestGetItemNotFound(t *testing.T) {
 func TestCreateProduct(t *testing.T) {
 	s := New()
 	ctx := context.Background()
-	threshold := 5
 
-	first, err := s.CreateProduct(ctx, inventory.NewProduct{SKU: "123456", Name: "Pallet jack", Category: "Handling", ReorderThreshold: &threshold})
+	first, err := s.CreateProduct(ctx, inventory.NewProduct{SKU: "123456", Name: "Pallet jack", Category: "Handling"})
 	if err != nil {
 		t.Fatalf("CreateProduct: %v", err)
 	}
-	threshold = 9
 	second, err := s.CreateProduct(ctx, inventory.NewProduct{SKU: "654321", Name: "Shrink wrap"})
 	if err != nil {
 		t.Fatalf("CreateProduct: %v", err)
@@ -57,12 +55,6 @@ func TestCreateProduct(t *testing.T) {
 	}
 	if first.SKU != "123456" || first.Name != "Pallet jack" || first.Category != "Handling" {
 		t.Errorf("first = %+v, want the fields it was created with", first)
-	}
-	if first.ReorderThreshold == nil || *first.ReorderThreshold != 5 {
-		t.Errorf("ReorderThreshold = %v, want 5 (unaffected by the caller's later change)", first.ReorderThreshold)
-	}
-	if second.ReorderThreshold != nil {
-		t.Errorf("ReorderThreshold = %d, want nil", *second.ReorderThreshold)
 	}
 	if first.TotalQuantity != 0 || !first.Active {
 		t.Errorf("TotalQuantity, Active = %d, %v; want 0, true", first.TotalQuantity, first.Active)

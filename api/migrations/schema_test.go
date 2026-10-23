@@ -183,11 +183,6 @@ func TestSchemaConstraints(t *testing.T) {
 			args: func(f fixture) []any { return []any{f.productID} },
 			code: checkViolation, constraint: "products_total_quantity_nonnegative",
 		},
-		{
-			name: "product reorder threshold can't be negative",
-			sql:  `INSERT INTO products (sku, name, reorder_threshold) VALUES ('100002', 'Another', -5)`,
-			code: checkViolation, constraint: "products_reorder_threshold_nonnegative",
-		},
 
 		// stock_adjustments
 		{
@@ -272,10 +267,10 @@ func TestSchemaAcceptsValidRows(t *testing.T) {
 				`INSERT INTO users (email, display_name) VALUES ('a@example.com', 'A'), ('b@example.com', 'B')`},
 			{"an admin user",
 				`INSERT INTO users (email, display_name, role) VALUES ('admin@example.com', 'Admin', 'admin')`},
-			{"an uncategorized product with no threshold",
+			{"an uncategorized product",
 				`INSERT INTO products (sku, name) VALUES ('123456', 'Hand truck')`},
 			{"a product whose SKU has leading zeros, at zero stock",
-				`INSERT INTO products (sku, name, total_quantity, reorder_threshold) VALUES ('000001', 'Dolly', 0, 0)`},
+				`INSERT INTO products (sku, name, total_quantity) VALUES ('000001', 'Dolly', 0)`},
 		}
 		for _, v := range valid {
 			if _, err := tx.Exec(ctx, v.sql); err != nil {

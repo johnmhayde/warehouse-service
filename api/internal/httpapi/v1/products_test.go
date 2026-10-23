@@ -88,7 +88,6 @@ func errorBody(t *testing.T, rec *httptest.ResponseRecorder) string {
 
 func TestCreateProductCreated(t *testing.T) {
 	created := time.Date(2026, 10, 21, 21, 14, 50, 123456000, time.FixedZone("EDT", -4*60*60))
-	threshold := 5
 	tests := []struct {
 		name        string
 		body        string
@@ -98,14 +97,14 @@ func TestCreateProductCreated(t *testing.T) {
 	}{
 		{
 			name: "all fields",
-			body: `{"sku":"000123","name":"Pallet jack","description":"Manual, 2500 kg","category":"Handling","reorder_threshold":5}`,
+			body: `{"sku":"000123","name":"Pallet jack","description":"Manual, 2500 kg","category":"Handling"}`,
 			product: inventory.Product{
 				ID: 42, SKU: "000123", Name: "Pallet jack", Description: "Manual, 2500 kg", Category: "Handling",
-				ReorderThreshold: &threshold, Active: true, CreatedAt: created, UpdatedAt: created,
+				Active: true, CreatedAt: created, UpdatedAt: created,
 			},
-			wantRequest: inventory.NewProduct{SKU: "000123", Name: "Pallet jack", Description: "Manual, 2500 kg", Category: "Handling", ReorderThreshold: &threshold},
+			wantRequest: inventory.NewProduct{SKU: "000123", Name: "Pallet jack", Description: "Manual, 2500 kg", Category: "Handling"},
 			wantJSON: `{"id":42,"sku":"000123","name":"Pallet jack","description":"Manual, 2500 kg","category":"Handling",` +
-				`"total_quantity":0,"reorder_threshold":5,"active":true,` +
+				`"total_quantity":0,"active":true,` +
 				`"created_at":"2026-10-22T01:14:50.123456Z","updated_at":"2026-10-22T01:14:50.123456Z"}`,
 		},
 		{
@@ -116,7 +115,7 @@ func TestCreateProductCreated(t *testing.T) {
 			},
 			wantRequest: inventory.NewProduct{SKU: "123456", Name: "Shrink wrap"},
 			wantJSON: `{"id":7,"sku":"123456","name":"Shrink wrap","description":"","category":null,` +
-				`"total_quantity":0,"reorder_threshold":null,"active":true,` +
+				`"total_quantity":0,"active":true,` +
 				`"created_at":"2026-10-22T01:14:50.123456Z","updated_at":"2026-10-22T01:14:50.123456Z"}`,
 		},
 	}
@@ -179,8 +178,8 @@ func TestCreateProductErrors(t *testing.T) {
 		{"malformed JSON", &adminID, `{"sku":"123456",`, nil, http.StatusBadRequest, "invalid request body", "invalid", false},
 		{"not an object", &adminID, `["123456"]`, nil, http.StatusBadRequest, "invalid request body", "invalid", false},
 		{"unknown field", &adminID, `{"sku":"123456","name":"Pallet jack","total_quantity":10}`, nil, http.StatusBadRequest, "invalid request body", "invalid", false},
-		{"wrong type", &adminID, `{"sku":"123456","name":"Pallet jack","reorder_threshold":"5"}`, nil, http.StatusBadRequest, "invalid request body", "invalid", false},
-		{"fractional threshold", &adminID, `{"sku":"123456","name":"Pallet jack","reorder_threshold":1.5}`, nil, http.StatusBadRequest, "invalid request body", "invalid", false},
+		{"removed field", &adminID, `{"sku":"123456","name":"Pallet jack","reorder_threshold":5}`, nil, http.StatusBadRequest, "invalid request body", "invalid", false},
+		{"wrong type", &adminID, `{"sku":"123456","name":"Pallet jack","category":5}`, nil, http.StatusBadRequest, "invalid request body", "invalid", false},
 		{"second object", &adminID, valid + `{}`, nil, http.StatusBadRequest, "invalid request body", "invalid", false},
 		{"trailing garbage", &adminID, valid + ` x`, nil, http.StatusBadRequest, "invalid request body", "invalid", false},
 		{"too large", &adminID, `{"sku":"123456","name":"` + strings.Repeat("a", maxBodyBytes) + `"}`, nil, http.StatusRequestEntityTooLarge, "request body too large", "invalid", false},
@@ -268,8 +267,6 @@ func TestCreateProductWithService(t *testing.T) {
 		{"long description", adminID, `{"sku":"123456","name":"x","description":"` + strings.Repeat("a", 2001) + `"}`, http.StatusBadRequest, "description must be at most 2000 characters"},
 		{"long category", adminID, `{"sku":"123456","name":"x","category":"` + strings.Repeat("a", 101) + `"}`, http.StatusBadRequest, "category must be at most 100 characters"},
 		{"NUL in name", adminID, `{"sku":"123456","name":"a\u0000b"}`, http.StatusBadRequest, "name must not contain NUL characters"},
-		{"negative threshold", adminID, `{"sku":"123456","name":"x","reorder_threshold":-1}`, http.StatusBadRequest, "reorder_threshold must be between 0 and 2147483647"},
-		{"threshold too large", adminID, `{"sku":"123456","name":"x","reorder_threshold":2147483648}`, http.StatusBadRequest, "reorder_threshold must be between 0 and 2147483647"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
