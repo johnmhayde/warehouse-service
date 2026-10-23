@@ -21,6 +21,20 @@ type fakeProducts struct {
 	// product is what GetProduct returns; gotID is the id it was asked for.
 	product Product
 	gotID   int64
+
+	// list is what ListProducts returns, cut to the filter's limit;
+	// gotFilter is the filter it was given.
+	list      []Product
+	gotFilter ProductFilter
+}
+
+func (f *fakeProducts) ListProducts(ctx context.Context, filter ProductFilter) ([]Product, error) {
+	f.called = true
+	f.gotFilter = filter
+	if f.err != nil {
+		return nil, f.err
+	}
+	return f.list[:min(filter.Limit, len(f.list))], nil
 }
 
 func (f *fakeProducts) CreateProduct(ctx context.Context, actorID int64, p NewProduct) (Product, error) {
@@ -250,5 +264,202 @@ func TestGetProductRepositoryError(t *testing.T) {
 		if !errors.Is(err, want) {
 			t.Errorf("GetProduct error = %v, want %v", err, want)
 		}
+	}
+}
+
+// products returns n active products with ids 1..n, named "Product 1"...
+func products(n int) []Product {
+	out := make([]Product, n)
+	for i := range out {
+		out[i] = Product{ID: int64(i + 1), SKU: SKU(fmt.Sprintf("%06d", i+1)), Name: fmt.Sprintf("Product %d", i+1), Active: true}
+	}
+	return out
+}
+
+func TestListProductsPages(t *testing.T) {
+	tests := []struct {
+		name      string
+		stored    int
+		limit     int
+		wantCount int
+		// wantNext is the id of the product the next page starts after, or
+		// 0 on the last page.
+		wantNext int64
+	}{
+		{"empty", 0, 50, 0, 0},
+		{"fewer than the limit", 3, 50, 3, 0},
+		{"exactly the limit", 3, 3, 3, 0},
+		{"one more than the limit", 4, 3, 3, 3},
+		{"many more than the limit", 10, 3, 3, 3},
+		{"limit 1", 2, 1, 1, 1},
+		{"largest limit", 101, 100, 100, 100},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := &fakeProducts{list: products(tt.stored)}
+
+			page, err := NewProductService(repo).ListProducts(context.Background(), requester, ProductFilter{Limit: tt.limit})
+			if err != nil {
+				t.Fatalf("ListProducts: %v", err)
+			}
+
+			// The repository is asked for one extra row.
+			if repo.gotFilter.Limit != tt.limit+1 {
+				t.Errorf("repository limit = %d, want %d", repo.gotFilter.Limit, tt.limit+1)
+			}
+			if len(page.Products) != tt.wantCount {
+				t.Errorf("got %d products, want %d", len(page.Products), tt.wantCount)
+			}
+			if tt.wantNext == 0 {
+				if page.Next != nil {
+					t.Errorf("Next = %+v, want nil on the last page", *page.Next)
+				}
+				return
+			}
+			want := ProductCursor{Name: fmt.Sprintf("Product %d", tt.wantNext), ID: tt.wantNext}
+			if page.Next == nil || *page.Next != want {
+				t.Errorf("Next = %v, want %+v", page.Next, want)
+			}
+		})
+	}
+}
+
+func TestListProductsNormalizesFilter(t *testing.T) {
+	after := &ProductCursor{Name: "Pallet jack", ID: 7}
+	tests := []struct {
+		name string
+		in   ProductFilter
+		want ProductFilter
+	}{
+		{"defaults", ProductFilter{Limit: 50}, ProductFilter{Limit: 51}},
+		{
+			"trims query and category",
+			ProductFilter{Query: "  pallet\t", Category: " Handling ", Limit: 10},
+			ProductFilter{Query: "pallet", Category: "Handling", Limit: 11},
+		},
+		{
+			"blank query and category are no filter",
+			ProductFilter{Query: " \t", Category: "  ", Limit: 10},
+			ProductFilter{Limit: 11},
+		},
+		{
+			"keeps LIKE metacharacters for the store to escape",
+			ProductFilter{Query: `50%_off\`, Limit: 10},
+			ProductFilter{Query: `50%_off\`, Limit: 11},
+		},
+		{"passes the cursor on", ProductFilter{Limit: 10, After: after}, ProductFilter{Limit: 11, After: after}},
+		{
+			"longest allowed query and category",
+			ProductFilter{Query: strings.Repeat("é", 200), Category: strings.Repeat("é", 100), Limit: 1},
+			ProductFilter{Query: strings.Repeat("é", 200), Category: strings.Repeat("é", 100), Limit: 2},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := &fakeProducts{}
+
+			if _, err := NewProductService(repo).ListProducts(context.Background(), requester, tt.in); err != nil {
+				t.Fatalf("ListProducts: %v", err)
+			}
+			if !reflect.DeepEqual(repo.gotFilter, tt.want) {
+				t.Errorf("repository got %+v, want %+v", repo.gotFilter, tt.want)
+			}
+		})
+	}
+}
+
+func TestListProductsValidation(t *testing.T) {
+	tests := []struct {
+		name    string
+		in      ProductFilter
+		wantErr string
+	}{
+		{"zero limit", ProductFilter{}, "limit must be between 1 and 100"},
+		{"negative limit", ProductFilter{Limit: -1}, "limit must be between 1 and 100"},
+		{"limit too large", ProductFilter{Limit: 101}, "limit must be between 1 and 100"},
+		{"long query", ProductFilter{Query: strings.Repeat("a", 201), Limit: 10}, "q must be at most 200 characters"},
+		{"NUL in query", ProductFilter{Query: "a\x00b", Limit: 10}, "q must not contain NUL characters"},
+		{"long category", ProductFilter{Category: strings.Repeat("é", 101), Limit: 10}, "category must be at most 100 characters"},
+		{"NUL in category", ProductFilter{Category: "\x00", Limit: 10}, "category must not contain NUL characters"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := &fakeProducts{}
+
+			_, err := NewProductService(repo).ListProducts(context.Background(), admin, tt.in)
+
+			var verr *ValidationError
+			if !errors.As(err, &verr) {
+				t.Fatalf("ListProducts error = %v, want a *ValidationError", err)
+			}
+			if verr.Error() != tt.wantErr {
+				t.Errorf("error = %q, want %q", verr.Error(), tt.wantErr)
+			}
+			if repo.called {
+				t.Error("repository called for an invalid filter")
+			}
+		})
+	}
+}
+
+func TestListProductsIncludeInactive(t *testing.T) {
+	tests := []struct {
+		name    string
+		actor   Actor
+		in      ProductFilter
+		wantErr error
+	}{
+		{"admin", admin, ProductFilter{IncludeInactive: true, Limit: 10}, nil},
+		{"requester", requester, ProductFilter{IncludeInactive: true, Limit: 10}, ErrForbidden},
+		// The zero Actor is anonymous and must never pass the admin check.
+		{"anonymous", Actor{}, ProductFilter{IncludeInactive: true, Limit: 10}, ErrForbidden},
+		// The role is checked before the filter rules.
+		{"requester with invalid filter", requester, ProductFilter{IncludeInactive: true}, ErrForbidden},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := &fakeProducts{}
+
+			_, err := NewProductService(repo).ListProducts(context.Background(), tt.actor, tt.in)
+
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("ListProducts error = %v, want %v", err, tt.wantErr)
+			}
+			if repo.called != (tt.wantErr == nil) {
+				t.Errorf("repository called = %v, want %v", repo.called, tt.wantErr == nil)
+			}
+			if tt.wantErr == nil && !repo.gotFilter.IncludeInactive {
+				t.Error("repository filter dropped IncludeInactive")
+			}
+		})
+	}
+}
+
+// TestListProductsActiveOnlyByDefault checks that a caller of any role who
+// doesn't ask for inactive products gets only active ones.
+func TestListProductsActiveOnlyByDefault(t *testing.T) {
+	for _, actor := range []Actor{admin, requester, {}} {
+		repo := &fakeProducts{}
+
+		if _, err := NewProductService(repo).ListProducts(context.Background(), actor, ProductFilter{Limit: 10}); err != nil {
+			t.Fatalf("ListProducts as %+v: %v", actor, err)
+		}
+		if repo.gotFilter.IncludeInactive {
+			t.Errorf("repository filter for %+v includes inactive products", actor)
+		}
+	}
+}
+
+func TestListProductsRepositoryError(t *testing.T) {
+	want := errors.New("db down")
+	repo := &fakeProducts{err: errors.Join(errors.New("postgres: select products"), want)}
+
+	page, err := NewProductService(repo).ListProducts(context.Background(), admin, ProductFilter{Limit: 10})
+
+	if !errors.Is(err, want) {
+		t.Errorf("ListProducts error = %v, want %v", err, want)
+	}
+	if page.Products != nil || page.Next != nil {
+		t.Errorf("ListProducts = %+v with an error, want the zero ProductPage", page)
 	}
 }

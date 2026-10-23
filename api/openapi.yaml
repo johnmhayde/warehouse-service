@@ -40,6 +40,180 @@ tags:
   - name: health
     description: Liveness and readiness probes for container runtimes and load balancers
 paths:
+  /api/v1/products:
+    get:
+      operationId: listProducts
+      summary: List and search products
+      description: |
+        Returns one page of the catalog, ordered by `name` and then `id`,
+        optionally filtered by a name search (`q`) and a category. No
+        identity is needed: the `X-Dev-User` header is optional, and a
+        request without it is served as an anonymous, non-admin caller.
+        Only active products are listed unless an admin sets
+        `include_inactive=true`.
+
+        Paging is by cursor: pass a response's `next_cursor` back as
+        `cursor`, with the same filters, to get the next page. `next_cursor`
+        is null on the last page. Each page starts after the last product
+        of the previous one, so changes between requests don't shift
+        pages: a product added or renamed meanwhile is listed only if it
+        now sorts after the cursor (a renamed one can appear twice).
+
+        Checks run in this order: a header that is sent must name an active
+        user (401); the query string must parse, and `limit`,
+        `include_inactive` and `cursor`, when present, must be well-formed
+        (400); `include_inactive=true` needs an admin (403); then `limit`
+        must be in range and `q` and `category` within their limits (400).
+        Unknown query parameters are ignored, and only the first value of
+        a repeated parameter is used.
+      tags: [products]
+      security:
+        - {}
+        - devUser: []
+      parameters:
+        - name: q
+          in: query
+          description: |
+            Lists products whose name contains this text, ignoring case.
+            Matched literally: `%`, `_` and `\` are not wildcards. Trimmed;
+            empty or blank means no name filter. At most 200 characters
+            after trimming; must not contain U+0000.
+          schema:
+            type: string
+            maxLength: 200
+          example: pallet
+        - name: category
+          in: query
+          description: |
+            Lists products in exactly this category (case-sensitive; not a
+            substring match). Trimmed; empty or blank means any category,
+            including uncategorized products. At most 100 characters after
+            trimming; must not contain U+0000.
+          schema:
+            type: string
+            maxLength: 100
+          example: Handling
+        - name: include_inactive
+          in: query
+          description: |
+            `true` also lists inactive products; admins only (403 for
+            anyone else, including anonymous callers). Only `true` and
+            `false` are accepted.
+          schema:
+            type: boolean
+            default: false
+        - name: limit
+          in: query
+          description: The most products to return on this page.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 50
+        - name: cursor
+          in: query
+          description: |
+            The `next_cursor` of the previous page, passed back unchanged.
+            Opaque: clients must not build or edit cursors. Omit it for the
+            first page.
+          schema:
+            type: string
+          example: NDI6UGFsbGV0IGphY2s
+      responses:
+        '200':
+          description: One page of products.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProductList'
+              examples:
+                morePages:
+                  summary: A page with more after it
+                  value:
+                    items:
+                      - id: 42
+                        sku: '000123'
+                        name: Pallet jack
+                        description: Manual, 2500 kg capacity
+                        category: Handling
+                        total_quantity: 140
+                        active: true
+                        created_at: '2026-10-22T01:14:50.123456Z'
+                        updated_at: '2026-10-22T01:14:50.123456Z'
+                    next_cursor: NDI6UGFsbGV0IGphY2s
+                lastPage:
+                  summary: The last page
+                  value:
+                    items: []
+                    next_cursor: null
+        '400':
+          description: |
+            The query string doesn't parse, a parameter is malformed, or a
+            filter breaks a rule. Rule violations name the parameter.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                invalidQueryString:
+                  summary: The query string can't be decoded (e.g. a bad percent escape or a semicolon)
+                  value:
+                    error: invalid query string
+                invalidLimit:
+                  summary: limit is not an integer
+                  value:
+                    error: invalid limit
+                limitOutOfRange:
+                  value:
+                    error: limit must be between 1 and 100
+                invalidIncludeInactive:
+                  summary: include_inactive is neither true nor false
+                  value:
+                    error: invalid include_inactive
+                invalidCursor:
+                  summary: cursor is not one this API returned
+                  value:
+                    error: invalid cursor
+                queryTooLong:
+                  value:
+                    error: q must be at most 200 characters
+                categoryTooLong:
+                  value:
+                    error: category must be at most 100 characters
+                nulCharacter:
+                  summary: q or category contains U+0000
+                  value:
+                    error: q must not contain NUL characters
+        '401':
+          description: |
+            An `X-Dev-User` header was sent but names no active user (from
+            the identity middleware). Omitting the header is not an error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error: unknown dev user
+        '403':
+          description: |
+            `include_inactive=true` was sent by a caller who is not an admin
+            (a non-admin user or an anonymous caller).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error: admin role required
+        '500':
+          description: |
+            The products could not be loaded, or the `X-Dev-User` lookup
+            failed. Internal details are logged, never returned.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error: internal error
   /api/v1/products/{id}:
     get:
       operationId: getProduct
@@ -431,6 +605,21 @@ components:
           type: string
           format: date-time
           description: RFC 3339 timestamp in UTC.
+    ProductList:
+      type: object
+      additionalProperties: false
+      required: [items, next_cursor]
+      properties:
+        items:
+          type: array
+          description: The page's products, ordered by name and then id. Empty when nothing matches.
+          items:
+            $ref: '#/components/schemas/Product'
+        next_cursor:
+          type: [string, 'null']
+          description: |
+            Pass as `cursor` to get the next page. Null on the last page.
+            Opaque; it may change format between releases.
     Error:
       type: object
       additionalProperties: false

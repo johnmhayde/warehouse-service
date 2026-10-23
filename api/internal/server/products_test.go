@@ -2,10 +2,13 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -161,6 +164,118 @@ func TestGetProductEndToEnd(t *testing.T) {
 			}
 			if !strings.Contains(rec.Body.String(), tt.wantBody) {
 				t.Errorf("body = %s, want it to contain %s", rec.Body, tt.wantBody)
+			}
+		})
+	}
+}
+
+// TestListProductsEndToEnd sends requests through the server's full
+// handler, wired the way cmd/api wires it, against a migrated database. It
+// follows next_cursor from page to page the way a client would.
+func TestListProductsEndToEnd(t *testing.T) {
+	pool := pgtest.Migrated(t)
+	ctx := context.Background()
+	for _, u := range []struct{ email, role string }{
+		{"admin@example.com", "admin"},
+		{"requester@example.com", "requester"},
+	} {
+		if _, err := pool.Exec(ctx,
+			"INSERT INTO users (email, display_name, role) VALUES ($1, $2, $3)",
+			u.email, "Test user", u.role,
+		); err != nil {
+			t.Fatalf("insert user %s: %v", u.email, err)
+		}
+	}
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO products (sku, name, category, active) VALUES
+			('000001', 'Bolt', 'Fixings', true),
+			('000002', 'Anchor', 'Fixings', true),
+			('000003', 'Bolt', NULL, true),
+			('000004', 'Clamp', 'Fixings', false),
+			('000005', 'Washer', 'Fixings', true)`,
+	); err != nil {
+		t.Fatalf("insert products: %v", err)
+	}
+
+	logger := slog.New(slog.DiscardHandler)
+	srv := New(config.Config{}, logger, health.New(logger),
+		inventory.NewProductService(postgres.NewProducts(pool)),
+		postgres.NewUsers(pool),
+	)
+	type page struct {
+		Items []struct {
+			SKU string `json:"sku"`
+		} `json:"items"`
+		NextCursor *string `json:"next_cursor"`
+	}
+	// list sends GET /api/v1/products?query and returns the status and,
+	// on a 200, the page's SKUs and next cursor.
+	list := func(t *testing.T, devUser, query string) (int, []string, *string) {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/products?"+query, nil)
+		if devUser != "" {
+			req.Header.Set(identity.DevUserHeader, devUser)
+		}
+		rec := httptest.NewRecorder()
+		srv.http.Handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			return rec.Code, nil, nil
+		}
+		var p page
+		if err := json.NewDecoder(rec.Body).Decode(&p); err != nil {
+			t.Fatalf("decode page: %v", err)
+		}
+		skus := []string{}
+		for _, it := range p.Items {
+			skus = append(skus, it.SKU)
+		}
+		return rec.Code, skus, p.NextCursor
+	}
+
+	tests := []struct {
+		name       string
+		devUser    string
+		query      string
+		wantStatus int
+		// wantPages are the SKUs of each page, following next_cursor.
+		wantPages [][]string
+	}{
+		{"anonymous", "", "", http.StatusOK, [][]string{{"000002", "000001", "000003", "000005"}}},
+		{"requester, pages of 2", "requester@example.com", "limit=2", http.StatusOK, [][]string{{"000002", "000001"}, {"000003", "000005"}}},
+		{"admin, pages of 3 with inactive", "admin@example.com", "limit=3&include_inactive=true", http.StatusOK,
+			[][]string{{"000002", "000001", "000003"}, {"000004", "000005"}}},
+		// "o" is in Anchor and both Bolts, but the second Bolt has no
+		// category.
+		{"filtered pages", "", "q=O&category=Fixings&limit=1", http.StatusOK, [][]string{{"000002"}, {"000001"}}},
+		{"no matches", "", "q=forklift", http.StatusOK, [][]string{{}}},
+		{"requester, with inactive", "requester@example.com", "include_inactive=true", http.StatusForbidden, nil},
+		{"anonymous, with inactive", "", "include_inactive=true", http.StatusForbidden, nil},
+		{"bad cursor", "", "cursor=nope", http.StatusBadRequest, nil},
+		{"unknown dev user", "nobody@example.com", "", http.StatusUnauthorized, nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			query := tt.query
+			for i, want := range tt.wantPages {
+				status, skus, next := list(t, tt.devUser, query)
+				if status != http.StatusOK {
+					t.Fatalf("page %d: status = %d, want 200", i, status)
+				}
+				if !reflect.DeepEqual(skus, want) {
+					t.Errorf("page %d SKUs = %v, want %v", i, skus, want)
+				}
+				last := i == len(tt.wantPages)-1
+				if (next == nil) != last {
+					t.Fatalf("page %d next_cursor = %v, want one only before the last page", i, next)
+				}
+				if next != nil {
+					query = tt.query + "&cursor=" + url.QueryEscape(*next)
+				}
+			}
+			if tt.wantPages == nil {
+				if status, _, _ := list(t, tt.devUser, query); status != tt.wantStatus {
+					t.Errorf("status = %d, want %d", status, tt.wantStatus)
+				}
 			}
 		})
 	}

@@ -3,10 +3,13 @@ package postgres
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
+	"slices"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/johnmhayde/warehouse-service/api/internal/inventory"
@@ -217,6 +220,257 @@ func TestProductsGetProduct(t *testing.T) {
 				t.Errorf("GetProduct = %+v, want %+v", got, want)
 			}
 		})
+	}
+}
+
+// listFixture is a product inserted for the ListProducts tests.
+type listFixture struct {
+	sku, name, category string
+	active              bool
+}
+
+// insertProducts inserts ps in order and returns their names by id. An
+// empty category is stored as NULL.
+func insertProducts(t *testing.T, pool *pgxpool.Pool, ps []listFixture) map[int64]string {
+	t.Helper()
+	names := make(map[int64]string)
+	for _, p := range ps {
+		var id int64
+		if err := pool.QueryRow(context.Background(),
+			`INSERT INTO products (sku, name, category, active) VALUES ($1, $2, NULLIF($3, ''), $4) RETURNING id`,
+			p.sku, p.name, p.category, p.active,
+		).Scan(&id); err != nil {
+			t.Fatalf("insert product %s: %v", p.sku, err)
+		}
+		names[id] = p.name
+	}
+	return names
+}
+
+// skusOf returns the SKUs of ps, in order.
+func skusOf(ps []inventory.Product) []string {
+	out := make([]string, len(ps))
+	for i, p := range ps {
+		out[i] = string(p.SKU)
+	}
+	return out
+}
+
+func TestProductsListProductsFilters(t *testing.T) {
+	pool := pgtest.Migrated(t)
+	products := NewProducts(pool)
+	insertProducts(t, pool, []listFixture{
+		{"000001", "Pallet jack", "Handling", true},
+		{"000002", "Electric PALLET jack", "Handling", true},
+		{"000003", "Old pallet jack", "Handling", false},
+		{"000004", "Shrink wrap", "Packaging", true},
+		{"000005", "Folding chair", "", true},
+		{"000006", "50% off sign", "Signage", true},
+		{"000007", "500 offcuts", "Signage", true},
+		{"000008", "cable_tie", "", true},
+		{"000009", "cableXtie", "", true},
+		{"000010", `C:\ label`, "", true},
+		{"000011", "C: label", "", true},
+		{"000012", "Retired sign", "Signage", false},
+	})
+
+	// The order of these names depends on the database's collation, so this
+	// test compares the SKUs as sets. TestProductsListProductsPaging covers
+	// the order.
+	tests := []struct {
+		name     string
+		filter   inventory.ProductFilter
+		wantSKUs []string
+	}{
+		{"everything active", inventory.ProductFilter{},
+			[]string{"000001", "000002", "000004", "000005", "000006", "000007", "000008", "000009", "000010", "000011"}},
+		{"everything", inventory.ProductFilter{IncludeInactive: true},
+			[]string{"000001", "000002", "000003", "000004", "000005", "000006", "000007", "000008", "000009", "000010", "000011", "000012"}},
+		{"query ignores case", inventory.ProductFilter{Query: "pallet"}, []string{"000001", "000002"}},
+		{"query matches anywhere in the name", inventory.ProductFilter{Query: "JACK"}, []string{"000001", "000002"}},
+		{"query with inactive", inventory.ProductFilter{Query: "pallet", IncludeInactive: true}, []string{"000001", "000002", "000003"}},
+		{"query matching nothing", inventory.ProductFilter{Query: "forklift"}, []string{}},
+		// LIKE metacharacters in the query match literally.
+		{"percent is literal", inventory.ProductFilter{Query: "50%"}, []string{"000006"}},
+		{"percent alone", inventory.ProductFilter{Query: "%"}, []string{"000006"}},
+		{"underscore is literal", inventory.ProductFilter{Query: "e_t"}, []string{"000008"}},
+		{"underscore alone", inventory.ProductFilter{Query: "_"}, []string{"000008"}},
+		{"backslash is literal", inventory.ProductFilter{Query: `:\`}, []string{"000010"}},
+		{"category", inventory.ProductFilter{Category: "Handling"}, []string{"000001", "000002"}},
+		{"category with inactive", inventory.ProductFilter{Category: "Signage", IncludeInactive: true}, []string{"000006", "000007", "000012"}},
+		{"category is exact", inventory.ProductFilter{Category: "handling"}, []string{}},
+		{"category is not a substring", inventory.ProductFilter{Category: "Hand"}, []string{}},
+		{"query and category", inventory.ProductFilter{Query: "off", Category: "Signage"}, []string{"000006", "000007"}},
+		{"query and other category", inventory.ProductFilter{Query: "pallet", Category: "Packaging"}, []string{}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := tt.filter
+			f.Limit = 100
+
+			got, err := products.ListProducts(context.Background(), f)
+			if err != nil {
+				t.Fatalf("ListProducts: %v", err)
+			}
+			skus := skusOf(got)
+			slices.Sort(skus)
+			if !reflect.DeepEqual(skus, tt.wantSKUs) {
+				t.Errorf("ListProducts SKUs = %v, want %v", skus, tt.wantSKUs)
+			}
+		})
+	}
+}
+
+// TestProductsListProductsPaging pages through the catalog a few products
+// at a time, each page starting after the last product of the one before,
+// and checks the pages together are exactly one unpaged ORDER BY name, id
+// query: every product once, in the database's own order. The names sort
+// differently under C and natural-language collations (case, spaces,
+// punctuation, accents), so the test holds whatever the collation is, and
+// several are repeated so ties must be broken by id.
+func TestProductsListProductsPaging(t *testing.T) {
+	pool := pgtest.Migrated(t)
+	ctx := context.Background()
+	products := NewProducts(pool)
+	names := []string{
+		"apple", "Banana", "a b", "ab", "Ab", "ab", "AB", "a-b", "a_b", "Apple",
+		"banana", "Banana", "B", "b", "10", "9", "éclair", "Eclair", "eclair",
+		"Zebra", "ab", "a b",
+	}
+	var fixtures []listFixture
+	for i, name := range names {
+		// Every fourth product is inactive, so both filters page through
+		// gaps.
+		fixtures = append(fixtures, listFixture{fmt.Sprintf("%06d", i+1), name, "", i%4 != 3})
+	}
+	insertProducts(t, pool, fixtures)
+
+	for _, includeInactive := range []bool{false, true} {
+		// The reference order: what Postgres returns in one query.
+		where := " WHERE active"
+		if includeInactive {
+			where = ""
+		}
+		rows, err := pool.Query(ctx, "SELECT id FROM products"+where+" ORDER BY name, id")
+		if err != nil {
+			t.Fatalf("select reference order: %v", err)
+		}
+		want, err := pgx.CollectRows(rows, pgx.RowTo[int64])
+		if err != nil {
+			t.Fatalf("read reference order: %v", err)
+		}
+
+		for _, limit := range []int{1, 2, 3, 5, len(want) - 1, len(want), len(want) + 1} {
+			t.Run(fmt.Sprintf("include inactive %v, limit %d", includeInactive, limit), func(t *testing.T) {
+				var (
+					got   []int64
+					after *inventory.ProductCursor
+				)
+				for page := 0; ; page++ {
+					if page > len(want) {
+						t.Fatalf("still paging after %d pages", page)
+					}
+					ps, err := products.ListProducts(ctx, inventory.ProductFilter{
+						IncludeInactive: includeInactive, Limit: limit, After: after,
+					})
+					if err != nil {
+						t.Fatalf("ListProducts page %d: %v", page, err)
+					}
+					if len(ps) > limit {
+						t.Fatalf("page %d has %d products, want at most %d", page, len(ps), limit)
+					}
+					for _, p := range ps {
+						got = append(got, p.ID)
+					}
+					if len(ps) < limit {
+						break
+					}
+					last := ps[len(ps)-1]
+					after = &inventory.ProductCursor{Name: last.Name, ID: last.ID}
+				}
+				if !reflect.DeepEqual(got, want) {
+					t.Errorf("paged ids = %v, want the unpaged order %v", got, want)
+				}
+			})
+		}
+	}
+}
+
+// TestProductsListProductsAfter checks the page starts strictly after the
+// cursor, including a cursor that names no stored product (one deleted or
+// renamed since the previous page).
+func TestProductsListProductsAfter(t *testing.T) {
+	pool := pgtest.Migrated(t)
+	products := NewProducts(pool)
+	var boltIDs []int64
+	for id, name := range insertProducts(t, pool, []listFixture{
+		{"000001", "Anchor", "", true},
+		{"000002", "Bolt", "", true},
+		{"000003", "Bolt", "", true},
+		{"000004", "Clamp", "", true},
+	}) {
+		if name == "Bolt" {
+			boltIDs = append(boltIDs, id)
+		}
+	}
+	firstBolt := min(boltIDs[0], boltIDs[1])
+
+	tests := []struct {
+		name     string
+		after    inventory.ProductCursor
+		wantSKUs []string
+	}{
+		{"after a stored product", inventory.ProductCursor{Name: "Bolt", ID: firstBolt}, []string{"000003", "000004"}},
+		{"between names", inventory.ProductCursor{Name: "Banana", ID: 1}, []string{"000002", "000003", "000004"}},
+		{"same name, larger id", inventory.ProductCursor{Name: "Bolt", ID: 1 << 62}, []string{"000004"}},
+		{"after the last product", inventory.ProductCursor{Name: "Clamp", ID: 1 << 62}, []string{}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := products.ListProducts(context.Background(), inventory.ProductFilter{Limit: 10, After: &tt.after})
+			if err != nil {
+				t.Fatalf("ListProducts: %v", err)
+			}
+			if skus := skusOf(got); !reflect.DeepEqual(skus, tt.wantSKUs) {
+				t.Errorf("ListProducts SKUs = %v, want %v", skus, tt.wantSKUs)
+			}
+		})
+	}
+}
+
+// TestProductsListProductsFields checks a listed product carries every
+// field, the same as GetProduct returns.
+func TestProductsListProductsFields(t *testing.T) {
+	pool := pgtest.Migrated(t)
+	ctx := context.Background()
+	products := NewProducts(pool)
+
+	created, err := products.CreateProduct(ctx, 1, inventory.NewProduct{SKU: "000123", Name: "Pallet jack", Description: "Manual", Category: "Handling"})
+	if err != nil {
+		t.Fatalf("CreateProduct: %v", err)
+	}
+	uncategorized, err := products.CreateProduct(ctx, 1, inventory.NewProduct{SKU: "123456", Name: "Shrink wrap"})
+	if err != nil {
+		t.Fatalf("CreateProduct: %v", err)
+	}
+
+	got, err := products.ListProducts(ctx, inventory.ProductFilter{Limit: 10})
+	if err != nil {
+		t.Fatalf("ListProducts: %v", err)
+	}
+	want := []inventory.Product{created, uncategorized}
+	if len(got) != len(want) {
+		t.Fatalf("ListProducts returned %d products, want %d", len(got), len(want))
+	}
+	for i := range want {
+		if !got[i].CreatedAt.Equal(want[i].CreatedAt) || !got[i].UpdatedAt.Equal(want[i].UpdatedAt) {
+			t.Errorf("product %d timestamps = %v, %v; want %v, %v", i, got[i].CreatedAt, got[i].UpdatedAt, want[i].CreatedAt, want[i].UpdatedAt)
+		}
+		got[i].CreatedAt, got[i].UpdatedAt = time.Time{}, time.Time{}
+		want[i].CreatedAt, want[i].UpdatedAt = time.Time{}, time.Time{}
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("ListProducts = %+v, want %+v", got, want)
 	}
 }
 

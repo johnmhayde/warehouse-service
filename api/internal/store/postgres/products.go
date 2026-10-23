@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -97,6 +99,60 @@ func (s *Products) GetProduct(ctx context.Context, id int64) (inventory.Product,
 		return inventory.Product{}, fmt.Errorf("select product: %w", err)
 	}
 	return p, nil
+}
+
+// ListProducts returns up to f.Limit products matching f in (name, id)
+// order, starting after f.After. It pages by keyset, comparing (name, id)
+// with the cursor's, so products_name_id_idx can serve a page however deep
+// it is; a name search can use products_name_trgm_idx instead. Only
+// placeholders carry f's values into the SQL.
+func (s *Products) ListProducts(ctx context.Context, f inventory.ProductFilter) ([]inventory.Product, error) {
+	var (
+		where []string
+		args  []any
+	)
+	// arg adds v to args and returns its placeholder.
+	arg := func(v any) string {
+		args = append(args, v)
+		return "$" + strconv.Itoa(len(args))
+	}
+	if !f.IncludeInactive {
+		where = append(where, "active")
+	}
+	if f.Query != "" {
+		where = append(where, "name ILIKE "+arg("%"+escapeLike(f.Query)+"%"))
+	}
+	if f.Category != "" {
+		where = append(where, "category = "+arg(f.Category))
+	}
+	if f.After != nil {
+		where = append(where, "(name, id) > ("+arg(f.After.Name)+", "+arg(f.After.ID)+")")
+	}
+
+	sql := `SELECT ` + productColumns + ` FROM products`
+	if len(where) > 0 {
+		sql += ` WHERE ` + strings.Join(where, " AND ")
+	}
+	sql += ` ORDER BY name, id LIMIT ` + arg(f.Limit)
+
+	rows, err := s.pool.Query(ctx, sql, args...)
+	if err != nil {
+		return nil, fmt.Errorf("select products: %w", err)
+	}
+	products, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (inventory.Product, error) {
+		return scanProduct(row)
+	})
+	if err != nil {
+		return nil, fmt.Errorf("select products: %w", err)
+	}
+	return products, nil
+}
+
+// escapeLike makes s match itself literally in a LIKE or ILIKE pattern by
+// escaping the metacharacters with backslash, LIKE's default escape
+// character.
+func escapeLike(s string) string {
+	return strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(s)
 }
 
 // uniqueViolation is the Postgres SQLSTATE for unique_violation.

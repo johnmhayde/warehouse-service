@@ -195,7 +195,7 @@ users ──< stock_adjustments >── products
 | ------ | ---- | ----- |
 | `id` | `bigint` identity | Primary key |
 | `sku` | `text` | Unique; exactly six ASCII digits (`^[0-9]{6}$`, leading zeros allowed), the same rule as `inventory.ParseSKU` ([ADR 0002](adr/0002-six-digit-skus.md)) |
-| `name` | `text` | Non-blank; trigram-indexed for `ILIKE '%term%'` search |
+| `name` | `text` | Non-blank; trigram-indexed for `ILIKE '%term%'` search, and indexed with `id` as `(name, id)` for the product list's order and keyset paging (migration 00008) |
 | `description` | `text` | Default `''` |
 | `category` | `text`, nullable | NULL means uncategorized; indexed |
 | `total_quantity` | `integer` | `>= 0`, default 0. Change it only together with a `stock_adjustments` row, in the same transaction. Creating a product through the API with `total_quantity` above 0 inserts both rows in one transaction, with an `"Initial stock"` adjustment by the creating admin; at 0 there is no adjustment |

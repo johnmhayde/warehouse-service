@@ -344,7 +344,7 @@ func TestProductIndexes(t *testing.T) {
 			t.Fatalf("read indexes: %v", err)
 		}
 		have := strings.Join(names, ",")
-		for _, want := range []string{"products_sku_key", "products_category_idx", "products_active_idx", "products_name_trgm_idx"} {
+		for _, want := range []string{"products_sku_key", "products_category_idx", "products_active_idx", "products_name_trgm_idx", "products_name_id_idx"} {
 			if !strings.Contains(have, want) {
 				t.Errorf("missing index %s (have %s)", want, have)
 			}
@@ -359,6 +359,12 @@ func TestProductIndexes(t *testing.T) {
 			if _, err := tx.Exec(ctx, `SET LOCAL enable_seqscan = off`); err != nil {
 				t.Fatalf("disable seqscan: %v", err)
 			}
+			// On a near-empty table a scan of the whole (name, id) btree
+			// looks cheaper still, so take it out of the running. The
+			// transaction rolls the drop back.
+			if _, err := tx.Exec(ctx, `DROP INDEX products_name_id_idx`); err != nil {
+				t.Fatalf("drop products_name_id_idx: %v", err)
+			}
 			rows, err := tx.Query(ctx, `EXPLAIN SELECT id FROM products WHERE name ILIKE '%pallet%'`)
 			if err != nil {
 				t.Fatalf("explain: %v", err)
@@ -370,6 +376,29 @@ func TestProductIndexes(t *testing.T) {
 			plan := strings.Join(lines, "\n")
 			if !strings.Contains(plan, "products_name_trgm_idx") {
 				t.Errorf("plan does not use products_name_trgm_idx:\n%s", plan)
+			}
+		})
+	})
+
+	t.Run("keyset page can use the name, id index", func(t *testing.T) {
+		withFixture(t, pool, func(ctx context.Context, tx pgx.Tx, f fixture) {
+			if _, err := tx.Exec(ctx, `SET LOCAL enable_seqscan = off`); err != nil {
+				t.Fatalf("disable seqscan: %v", err)
+			}
+			// The shape of the query postgres.Products.ListProducts sends
+			// for a page after the first.
+			rows, err := tx.Query(ctx,
+				`EXPLAIN SELECT id FROM products WHERE (name, id) > ('Fixture', 1) ORDER BY name, id LIMIT 51`)
+			if err != nil {
+				t.Fatalf("explain: %v", err)
+			}
+			lines, err := pgx.CollectRows(rows, pgx.RowTo[string])
+			if err != nil {
+				t.Fatalf("read plan: %v", err)
+			}
+			plan := strings.Join(lines, "\n")
+			if !strings.Contains(plan, "products_name_id_idx") {
+				t.Errorf("plan does not use products_name_id_idx:\n%s", plan)
 			}
 		})
 	})
