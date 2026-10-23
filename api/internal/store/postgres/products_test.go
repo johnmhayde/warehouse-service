@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/johnmhayde/warehouse-service/api/internal/inventory"
@@ -322,56 +323,76 @@ func TestProductsListProductsFilters(t *testing.T) {
 
 // TestProductsListProductsPaging pages through the catalog a few products
 // at a time, each page starting after the last product of the one before,
-// and checks every product comes back once in (name, id) order, with equal
-// names in id order.
+// and checks the pages together are exactly one unpaged ORDER BY name, id
+// query: every product once, in the database's own order. The names sort
+// differently under C and natural-language collations (case, spaces,
+// punctuation, accents), so the test holds whatever the collation is, and
+// several are repeated so ties must be broken by id.
 func TestProductsListProductsPaging(t *testing.T) {
 	pool := pgtest.Migrated(t)
+	ctx := context.Background()
 	products := NewProducts(pool)
-	// Inserted out of order, with three products named "Bolt" whose ids
-	// aren't adjacent, so ties are broken by id and not by insertion.
-	names := insertProducts(t, pool, []listFixture{
-		{"000001", "Bolt", "", true},
-		{"000002", "Washer", "", true},
-		{"000003", "Anchor", "", true},
-		{"000004", "Bolt", "", true},
-		{"000005", "Nut", "", true},
-		{"000006", "Bolt", "", true},
-		{"000007", "Inactive bolt", "", false},
-		{"000008", "Clamp", "", true},
-	})
-	wantSKUs := []string{"000003", "000001", "000004", "000006", "000008", "000005", "000002"}
+	names := []string{
+		"apple", "Banana", "a b", "ab", "Ab", "ab", "AB", "a-b", "a_b", "Apple",
+		"banana", "Banana", "B", "b", "10", "9", "éclair", "Eclair", "eclair",
+		"Zebra", "ab", "a b",
+	}
+	var fixtures []listFixture
+	for i, name := range names {
+		// Every fourth product is inactive, so both filters page through
+		// gaps.
+		fixtures = append(fixtures, listFixture{fmt.Sprintf("%06d", i+1), name, "", i%4 != 3})
+	}
+	insertProducts(t, pool, fixtures)
 
-	for _, limit := range []int{1, 2, 3, 7, 8} {
-		t.Run(fmt.Sprintf("limit %d", limit), func(t *testing.T) {
-			var (
-				got   []string
-				after *inventory.ProductCursor
-			)
-			for page := 0; ; page++ {
-				if page > len(wantSKUs) {
-					t.Fatalf("still paging after %d pages", page)
+	for _, includeInactive := range []bool{false, true} {
+		// The reference order: what Postgres returns in one query.
+		where := " WHERE active"
+		if includeInactive {
+			where = ""
+		}
+		rows, err := pool.Query(ctx, "SELECT id FROM products"+where+" ORDER BY name, id")
+		if err != nil {
+			t.Fatalf("select reference order: %v", err)
+		}
+		want, err := pgx.CollectRows(rows, pgx.RowTo[int64])
+		if err != nil {
+			t.Fatalf("read reference order: %v", err)
+		}
+
+		for _, limit := range []int{1, 2, 3, 5, len(want) - 1, len(want), len(want) + 1} {
+			t.Run(fmt.Sprintf("include inactive %v, limit %d", includeInactive, limit), func(t *testing.T) {
+				var (
+					got   []int64
+					after *inventory.ProductCursor
+				)
+				for page := 0; ; page++ {
+					if page > len(want) {
+						t.Fatalf("still paging after %d pages", page)
+					}
+					ps, err := products.ListProducts(ctx, inventory.ProductFilter{
+						IncludeInactive: includeInactive, Limit: limit, After: after,
+					})
+					if err != nil {
+						t.Fatalf("ListProducts page %d: %v", page, err)
+					}
+					if len(ps) > limit {
+						t.Fatalf("page %d has %d products, want at most %d", page, len(ps), limit)
+					}
+					for _, p := range ps {
+						got = append(got, p.ID)
+					}
+					if len(ps) < limit {
+						break
+					}
+					last := ps[len(ps)-1]
+					after = &inventory.ProductCursor{Name: last.Name, ID: last.ID}
 				}
-				ps, err := products.ListProducts(context.Background(), inventory.ProductFilter{Limit: limit, After: after})
-				if err != nil {
-					t.Fatalf("ListProducts page %d: %v", page, err)
+				if !reflect.DeepEqual(got, want) {
+					t.Errorf("paged ids = %v, want the unpaged order %v", got, want)
 				}
-				if len(ps) > limit {
-					t.Fatalf("page %d has %d products, want at most %d", page, len(ps), limit)
-				}
-				got = append(got, skusOf(ps)...)
-				if len(ps) < limit {
-					break
-				}
-				last := ps[len(ps)-1]
-				if last.Name != names[last.ID] {
-					t.Fatalf("product %d name = %q, want %q", last.ID, last.Name, names[last.ID])
-				}
-				after = &inventory.ProductCursor{Name: last.Name, ID: last.ID}
-			}
-			if !reflect.DeepEqual(got, wantSKUs) {
-				t.Errorf("paged SKUs = %v, want %v", got, wantSKUs)
-			}
-		})
+			})
+		}
 	}
 }
 

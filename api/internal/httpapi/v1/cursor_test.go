@@ -15,6 +15,7 @@ func TestCursorRoundTrip(t *testing.T) {
 		{Name: "Bolt: M8 x 40", ID: 7},
 		{Name: "50% off / é ü 漢字 ✓", ID: 9223372036854775807},
 		{Name: " padded ", ID: 3},
+		{Name: strings.Repeat("é", inventory.MaxNameLen), ID: 4},
 	} {
 		s := encodeCursor(c)
 		if strings.ContainsAny(s, "+/=") {
@@ -29,6 +30,14 @@ func TestCursorRoundTrip(t *testing.T) {
 
 func TestDecodeCursorRejects(t *testing.T) {
 	enc := func(s string) string { return base64.RawURLEncoding.EncodeToString([]byte(s)) }
+	// "1:ab" encodes to "MTphYg", whose last character carries 4 unused
+	// bits. Setting one gives a second spelling of the same bytes, which
+	// lenient decoding accepts and strict decoding rejects.
+	nonCanonical := enc("1:ab")
+	nonCanonical = nonCanonical[:len(nonCanonical)-1] + "h"
+	if b, err := base64.RawURLEncoding.DecodeString(nonCanonical); err != nil || string(b) != "1:ab" {
+		t.Fatalf("lenient decode of %q = %q, %v; want \"1:ab\"", nonCanonical, b, err)
+	}
 	tests := []struct {
 		name, cursor string
 	}{
@@ -46,6 +55,8 @@ func TestDecodeCursorRejects(t *testing.T) {
 		{"id not a number", enc("x:Pallet jack")},
 		{"NUL in name", enc("1:a\x00b")},
 		{"invalid UTF-8 in name", enc("1:\xff")},
+		{"name too long", enc("1:" + strings.Repeat("é", inventory.MaxNameLen+1))},
+		{"non-zero padding bits", nonCanonical},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -77,9 +77,10 @@ const (
 	MaxProductLimit     = 100
 )
 
-// Limits on product fields, in characters (runes).
+// Limits on product fields, in characters (runes). MaxNameLen is exported
+// so the HTTP layer can bound the name inside a page cursor.
 const (
-	maxNameLen        = 200
+	MaxNameLen        = 200
 	maxDescriptionLen = 2000
 	maxCategoryLen    = 100
 )
@@ -226,7 +227,7 @@ func (p NewProduct) normalize() (NewProduct, error) {
 		value  string
 		maxLen int
 	}{
-		{"name", p.Name, maxNameLen},
+		{"name", p.Name, MaxNameLen},
 		{"description", p.Description, maxDescriptionLen},
 		{"category", p.Category, maxCategoryLen},
 	} {
@@ -257,7 +258,7 @@ func (f ProductFilter) normalize() (ProductFilter, error) {
 		value  string
 		maxLen int
 	}{
-		{"q", f.Query, maxNameLen},
+		{"q", f.Query, MaxNameLen},
 		{"category", f.Category, maxCategoryLen},
 	} {
 		if utf8.RuneCountInString(p.value) > p.maxLen {

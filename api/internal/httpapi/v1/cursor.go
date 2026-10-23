@@ -19,11 +19,12 @@ func encodeCursor(c inventory.ProductCursor) string {
 }
 
 // decodeCursor parses a cursor made by encodeCursor. It rejects anything
-// encodeCursor can't have produced from a stored product: a bad encoding,
-// an id that isn't a positive integer, or a name that is empty, isn't
-// UTF-8 or contains NUL (which Postgres text can't hold).
+// encodeCursor can't have produced from a stored product: a bad or
+// non-canonical encoding, an id that isn't a positive integer, or a name
+// that is empty, longer than inventory.MaxNameLen characters, isn't UTF-8
+// or contains NUL (which Postgres text can't hold).
 func decodeCursor(s string) (inventory.ProductCursor, bool) {
-	b, err := base64.RawURLEncoding.DecodeString(s)
+	b, err := base64.RawURLEncoding.Strict().DecodeString(s)
 	if err != nil {
 		return inventory.ProductCursor{}, false
 	}
@@ -32,7 +33,8 @@ func decodeCursor(s string) (inventory.ProductCursor, bool) {
 		return inventory.ProductCursor{}, false
 	}
 	id, ok := parseProductID(idPart)
-	if !ok || name == "" || !utf8.ValidString(name) || strings.ContainsRune(name, 0) {
+	if !ok || name == "" || !utf8.ValidString(name) || utf8.RuneCountInString(name) > inventory.MaxNameLen ||
+		strings.ContainsRune(name, 0) {
 		return inventory.ProductCursor{}, false
 	}
 	return inventory.ProductCursor{Name: name, ID: id}, true
