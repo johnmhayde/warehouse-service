@@ -441,21 +441,26 @@ func TestGetProductErrors(t *testing.T) {
 		// wantID is set when the id parsed, so the service was called and
 		// product.id is on the event.
 		wantID bool
+		// wantHidden is set when product.hidden should be on the event.
+		wantHidden bool
 	}{
-		{"no identity", nil, "/api/v1/products/42", nil, http.StatusUnauthorized, "authentication required", "unauthenticated", false},
-		{"not a number", &requesterID, "/api/v1/products/abc", nil, http.StatusBadRequest, "invalid product id", "invalid", false},
-		{"SKU instead of id", &requesterID, "/api/v1/products/SKU-00921", nil, http.StatusBadRequest, "invalid product id", "invalid", false},
-		{"zero", &requesterID, "/api/v1/products/0", nil, http.StatusBadRequest, "invalid product id", "invalid", false},
-		{"negative", &requesterID, "/api/v1/products/-1", nil, http.StatusBadRequest, "invalid product id", "invalid", false},
-		{"plus sign", &requesterID, "/api/v1/products/+1", nil, http.StatusBadRequest, "invalid product id", "invalid", false},
-		{"fraction", &requesterID, "/api/v1/products/1.5", nil, http.StatusBadRequest, "invalid product id", "invalid", false},
-		{"space", &requesterID, "/api/v1/products/%201", nil, http.StatusBadRequest, "invalid product id", "invalid", false},
-		{"hex", &requesterID, "/api/v1/products/0x1", nil, http.StatusBadRequest, "invalid product id", "invalid", false},
-		{"fullwidth digit", &requesterID, "/api/v1/products/%EF%BC%91", nil, http.StatusBadRequest, "invalid product id", "invalid", false},
-		{"overflows bigint", &requesterID, "/api/v1/products/9223372036854775808", nil, http.StatusBadRequest, "invalid product id", "invalid", false},
-		{"not found", &requesterID, "/api/v1/products/42", inventory.ErrNotFound, http.StatusNotFound, "product not found", "not_found", true},
-		{"wrapped not found", &adminID, "/api/v1/products/42", fmt.Errorf("select product: %w", inventory.ErrNotFound), http.StatusNotFound, "product not found", "not_found", true},
-		{"store failure", &requesterID, "/api/v1/products/42", errors.New("db down: connection refused"), http.StatusInternalServerError, "internal error", "error", true},
+		{"no identity", nil, "/api/v1/products/42", nil, http.StatusUnauthorized, "authentication required", "unauthenticated", false, false},
+		{"not a number", &requesterID, "/api/v1/products/abc", nil, http.StatusBadRequest, "invalid product id", "invalid", false, false},
+		{"SKU instead of id", &requesterID, "/api/v1/products/SKU-00921", nil, http.StatusBadRequest, "invalid product id", "invalid", false, false},
+		{"zero", &requesterID, "/api/v1/products/0", nil, http.StatusBadRequest, "invalid product id", "invalid", false, false},
+		{"negative", &requesterID, "/api/v1/products/-1", nil, http.StatusBadRequest, "invalid product id", "invalid", false, false},
+		{"plus sign", &requesterID, "/api/v1/products/+1", nil, http.StatusBadRequest, "invalid product id", "invalid", false, false},
+		{"fraction", &requesterID, "/api/v1/products/1.5", nil, http.StatusBadRequest, "invalid product id", "invalid", false, false},
+		{"space", &requesterID, "/api/v1/products/%201", nil, http.StatusBadRequest, "invalid product id", "invalid", false, false},
+		{"hex", &requesterID, "/api/v1/products/0x1", nil, http.StatusBadRequest, "invalid product id", "invalid", false, false},
+		{"fullwidth digit", &requesterID, "/api/v1/products/%EF%BC%91", nil, http.StatusBadRequest, "invalid product id", "invalid", false, false},
+		{"overflows bigint", &requesterID, "/api/v1/products/9223372036854775808", nil, http.StatusBadRequest, "invalid product id", "invalid", false, false},
+		{"not found", &requesterID, "/api/v1/products/42", inventory.ErrNotFound, http.StatusNotFound, "product not found", "not_found", true, false},
+		{"wrapped not found", &adminID, "/api/v1/products/42", fmt.Errorf("select product: %w", inventory.ErrNotFound), http.StatusNotFound, "product not found", "not_found", true, false},
+		{"store failure", &requesterID, "/api/v1/products/42", errors.New("db down: connection refused"), http.StatusInternalServerError, "internal error", "error", true, false},
+		// Same response as not found; only the event tells them apart.
+		{"hidden", &requesterID, "/api/v1/products/42", inventory.ErrHidden, http.StatusNotFound, "product not found", "not_found", true, true},
+		{"wrapped hidden", &requesterID, "/api/v1/products/42", fmt.Errorf("get: %w", inventory.ErrHidden), http.StatusNotFound, "product not found", "not_found", true, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -483,10 +488,31 @@ func TestGetProductErrors(t *testing.T) {
 			if _, ok := attrs["product.sku"]; ok {
 				t.Error("event has product.sku for a failed request")
 			}
+			if got, ok := attrs["product.hidden"]; ok != tt.wantHidden || (ok && !got.Bool()) {
+				t.Errorf("event product.hidden = %v (present %v), want present %v and true", got, ok, tt.wantHidden)
+			}
 			if got, ok := attrs["user.id"]; ok != (tt.id != nil) || (ok && got.Int64() != tt.id.UserID) {
 				t.Errorf("event user.id = %v (present %v), want the caller's id", got, ok)
 			}
 		})
+	}
+}
+
+// TestGetProductLeadingZeros pins that ids with leading zeros are accepted
+// and mean the same product: /products/007 is product 7.
+func TestGetProductLeadingZeros(t *testing.T) {
+	products := &fakeProducts{product: inventory.Product{ID: 7, SKU: "123456", Active: true}}
+
+	rec, event := getProduct(t, products, &requesterID, "/api/v1/products/007")
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if products.gotID != 7 {
+		t.Errorf("service called with id %d, want 7", products.gotID)
+	}
+	if got := eventAttrs(t, event)["product.id"]; !got.Equal(slog.Int64Value(7)) {
+		t.Errorf("event product.id = %v, want 7", got)
 	}
 }
 
@@ -523,17 +549,22 @@ func TestGetProductWithService(t *testing.T) {
 		id         identity.Identity
 		path       string
 		wantStatus int
+		wantHidden bool
 	}{
-		{"requester, active", requesterID, "/api/v1/products/1", http.StatusOK},
-		{"admin, active", adminID, "/api/v1/products/1", http.StatusOK},
-		{"requester, inactive", requesterID, "/api/v1/products/2", http.StatusNotFound},
-		{"admin, inactive", adminID, "/api/v1/products/2", http.StatusOK},
-		{"requester, unknown", requesterID, "/api/v1/products/3", http.StatusNotFound},
-		{"admin, unknown", adminID, "/api/v1/products/3", http.StatusNotFound},
+		{"requester, active", requesterID, "/api/v1/products/1", http.StatusOK, false},
+		{"admin, active", adminID, "/api/v1/products/1", http.StatusOK, false},
+		{"requester, inactive", requesterID, "/api/v1/products/2", http.StatusNotFound, true},
+		{"admin, inactive", adminID, "/api/v1/products/2", http.StatusOK, false},
+		{"requester, unknown", requesterID, "/api/v1/products/3", http.StatusNotFound, false},
+		{"admin, unknown", adminID, "/api/v1/products/3", http.StatusNotFound, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			rec, _ := getProduct(t, inventory.NewProductService(stubRepository{}), &tt.id, tt.path)
+			rec, event := getProduct(t, inventory.NewProductService(stubRepository{}), &tt.id, tt.path)
+
+			if _, ok := eventAttrs(t, event)["product.hidden"]; ok != tt.wantHidden {
+				t.Errorf("event has product.hidden = %v, want %v", ok, tt.wantHidden)
+			}
 
 			if rec.Code != tt.wantStatus {
 				t.Errorf("status = %d, want %d", rec.Code, tt.wantStatus)

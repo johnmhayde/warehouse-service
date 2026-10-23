@@ -148,6 +148,11 @@ func (h *handler) getProduct(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case errors.Is(err, inventory.ErrNotFound):
 		addProductOutcome(ctx, "not_found")
+		// The client can't tell a hidden product from a missing one; the
+		// event can.
+		if errors.Is(err, inventory.ErrHidden) {
+			telemetry.Add(ctx, slog.Bool("product.hidden", true))
+		}
 		writeError(w, http.StatusNotFound, "product not found")
 		return
 	case err != nil:

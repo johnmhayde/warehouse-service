@@ -50,7 +50,7 @@ Rules:
 
 - **Everything goes under `internal/`** unless there's a concrete reason it must be importable from outside `api/`. There is no `pkg/` directory.
 - **Packages are named after what they provide, not their layer.** Write `inventory`, `movement`, `postgres`, never `models`, `services`, `utils` or `common`.
-- **Dependencies point inward.** Domain packages (`inventory`, `movement`) define the interfaces they need (for example `inventory.Repository`) and import neither `net/http` nor a database driver. `store/*` implements those interfaces, and `httpapi/*` calls the domain.
+- **Dependencies point inward.** Domain packages (`inventory`, `movement`) define the interfaces they need (for example `inventory.ProductRepository`) and import neither `net/http` nor a database driver. `store/*` implements those interfaces, and `httpapi/*` calls the domain.
 - **Wiring is explicit.** Dependencies are built in `cmd/api` (`run`) and passed in through constructors. There are no package-level globals and no DI framework.
 - **`main` stays small.** It sets up signal handling and calls `run(ctx, getenv, stdout) error`, and every input to `run` is a parameter so it can be tested.
 - **Architecture rules are enforced by go-arch-lint.** The import rules above are encoded in [`api/.go-arch-lint.yml`](../api/.go-arch-lint.yml) and checked in CI. Run it from `api/` with `go run github.com/fe3dback/go-arch-lint@v1.19.0 check`, or without a local Go install with `docker compose run --rm --no-deps test go run github.com/fe3dback/go-arch-lint@v1.19.0 check`. A new package under `api/` must be added as a component (the check fails on unmapped files), and each new domain package gets its own component so domains can't import each other. go-arch-lint doesn't check standard-library imports, so "no `net/http` or `database/sql` in domain packages" is still enforced by review. `_test.go` files are not checked; that is what keeps `pgtest` test-only, since no component may import it.
@@ -97,7 +97,7 @@ Secrets (currently just `DB_PASSWORD`) are injected from Kubernetes Secrets as e
 - Field names are lowercase, dot-namespaced and snake_case within a segment: `http.method`, `http.route`, `http.status`, `duration_ms`, `warehouse.id`, `stock.below_reorder`. The frontend uses the same names.
 - `http.route` is the matched pattern (`GET /api/v1/products/{id}`), not the raw path, so it can be grouped on. The raw path goes in `http.path`.
 - Units go in the field name (`_ms`, `_bytes`).
-- A handler records how its request ended in one `<entity>.outcome` field (e.g. `product.outcome`: `created`, `found`, `unauthenticated`, `forbidden`, `invalid`, `not_found`, `duplicate_sku`, `error`), along with the ids it knows (`user.id`, `product.sku`, `product.id`). On a 500 the internal error goes in `error.message`, never in the response.
+- A handler records how its request ended in one `<entity>.outcome` field (e.g. `product.outcome`: `created`, `found`, `unauthenticated`, `forbidden`, `invalid`, `not_found`, `duplicate_sku`, `error`), along with the ids it knows (`user.id`, `product.sku`, `product.id`). `product.hidden` is `true` when a product exists but the caller may not see it (an inactive product requested by a non-admin), so it can be told apart from an unknown id although both get the same 404. On a 500 the internal error goes in `error.message`, never in the response.
 
 ## Testing
 

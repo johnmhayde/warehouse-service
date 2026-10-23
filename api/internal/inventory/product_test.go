@@ -174,8 +174,9 @@ func TestGetProduct(t *testing.T) {
 		{"requester, active", requester, active, nil},
 		{"admin, active", admin, active, nil},
 		{"admin, inactive", admin, inactive, nil},
-		// Inactive products are hidden from everyone but admins.
-		{"requester, inactive", requester, inactive, ErrNotFound},
+		// Inactive products are hidden from everyone but admins, as if
+		// they didn't exist.
+		{"requester, inactive", requester, inactive, ErrHidden},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -199,6 +200,15 @@ func TestGetProduct(t *testing.T) {
 				t.Errorf("GetProduct = %+v, want %+v", got, tt.product)
 			}
 		})
+	}
+}
+
+func TestErrHiddenIsNotFound(t *testing.T) {
+	if !errors.Is(ErrHidden, ErrNotFound) {
+		t.Error("ErrHidden does not match ErrNotFound")
+	}
+	if errors.Is(ErrNotFound, ErrHidden) {
+		t.Error("ErrNotFound matches ErrHidden")
 	}
 }
 
