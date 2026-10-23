@@ -474,6 +474,121 @@ func TestProductsListProductsFields(t *testing.T) {
 	}
 }
 
+func strPtr(s string) *string { return &s }
+
+func TestProductsUpdateProduct(t *testing.T) {
+	pool := pgtest.Migrated(t)
+	ctx := context.Background()
+	products := NewProducts(pool)
+
+	var adminID int64
+	if err := pool.QueryRow(ctx,
+		"INSERT INTO users (email, display_name, role) VALUES ('admin@example.com', 'Admin', 'admin') RETURNING id",
+	).Scan(&adminID); err != nil {
+		t.Fatalf("insert user: %v", err)
+	}
+
+	tests := []struct {
+		name   string
+		update inventory.ProductUpdate
+		// want is the product's fields after the update, applied to
+		// "Pallet jack" / "Manual" / "Handling".
+		wantName, wantDescription, wantCategory string
+	}{
+		{"name only", inventory.ProductUpdate{Name: strPtr("Hand pallet truck")}, "Hand pallet truck", "Manual", "Handling"},
+		{"description only", inventory.ProductUpdate{Description: strPtr("Hydraulic")}, "Pallet jack", "Hydraulic", "Handling"},
+		{"empty description", inventory.ProductUpdate{Description: strPtr("")}, "Pallet jack", "", "Handling"},
+		{"category only", inventory.ProductUpdate{Category: strPtr("Lifting")}, "Pallet jack", "Manual", "Lifting"},
+		{"clear category", inventory.ProductUpdate{Category: strPtr("")}, "Pallet jack", "Manual", ""},
+		{
+			"every field",
+			inventory.ProductUpdate{Name: strPtr("Hand pallet truck"), Description: strPtr("Hydraulic"), Category: strPtr("Lifting")},
+			"Hand pallet truck", "Hydraulic", "Lifting",
+		},
+	}
+	for i, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sku := inventory.SKU(fmt.Sprintf("%06d", i+1))
+			created, err := products.CreateProduct(ctx, adminID, inventory.NewProduct{
+				SKU: sku, Name: "Pallet jack", Description: "Manual", Category: "Handling", TotalQuantity: 12,
+			})
+			if err != nil {
+				t.Fatalf("CreateProduct: %v", err)
+			}
+
+			got, err := products.UpdateProduct(ctx, created.ID, tt.update)
+			if err != nil {
+				t.Fatalf("UpdateProduct: %v", err)
+			}
+
+			if got.Name != tt.wantName || got.Description != tt.wantDescription || got.Category != tt.wantCategory {
+				t.Errorf("name, description, category = %q, %q, %q; want %q, %q, %q",
+					got.Name, got.Description, got.Category, tt.wantName, tt.wantDescription, tt.wantCategory)
+			}
+			// The rest of the product is unchanged; stock only changes
+			// through stock adjustments.
+			if got.ID != created.ID || got.SKU != sku || got.TotalQuantity != 12 || !got.Active || !got.CreatedAt.Equal(created.CreatedAt) {
+				t.Errorf("UpdateProduct = %+v, want id, SKU, total quantity, active and created_at of %+v", got, created)
+			}
+			// now() is the transaction's start time, so the update, in a
+			// later transaction, moves updated_at past created_at.
+			if !got.UpdatedAt.After(got.CreatedAt) {
+				t.Errorf("UpdatedAt = %v, want after CreatedAt %v", got.UpdatedAt, got.CreatedAt)
+			}
+
+			stored, err := products.GetProduct(ctx, created.ID)
+			if err != nil {
+				t.Fatalf("GetProduct: %v", err)
+			}
+			if !reflect.DeepEqual(stored, got) {
+				t.Errorf("stored product = %+v, want what UpdateProduct returned, %+v", stored, got)
+			}
+			var categoryIsNull bool
+			if err := pool.QueryRow(ctx, "SELECT category IS NULL FROM products WHERE id = $1", created.ID).Scan(&categoryIsNull); err != nil {
+				t.Fatalf("query category: %v", err)
+			}
+			if categoryIsNull != (tt.wantCategory == "") {
+				t.Errorf("category IS NULL = %v, want %v", categoryIsNull, tt.wantCategory == "")
+			}
+			// Only the initial stock adjustment exists.
+			if adj := adjustmentsOf(t, pool, created.ID); len(adj) != 1 {
+				t.Errorf("stock adjustments = %+v, want only the initial one", adj)
+			}
+		})
+	}
+}
+
+func TestProductsUpdateProductInactive(t *testing.T) {
+	pool := pgtest.Migrated(t)
+	ctx := context.Background()
+	products := NewProducts(pool)
+
+	created, err := products.CreateProduct(ctx, 1, inventory.NewProduct{SKU: "123456", Name: "Pallet jack"})
+	if err != nil {
+		t.Fatalf("CreateProduct: %v", err)
+	}
+	if _, err := pool.Exec(ctx, "UPDATE products SET active = false WHERE id = $1", created.ID); err != nil {
+		t.Fatalf("deactivate product: %v", err)
+	}
+
+	got, err := products.UpdateProduct(ctx, created.ID, inventory.ProductUpdate{Name: strPtr("Old pallet jack")})
+	if err != nil {
+		t.Fatalf("UpdateProduct: %v", err)
+	}
+	if got.Name != "Old pallet jack" || got.Active {
+		t.Errorf("Name, Active = %q, %v; want \"Old pallet jack\", false", got.Name, got.Active)
+	}
+}
+
+func TestProductsUpdateProductNotFound(t *testing.T) {
+	pool := pgtest.Migrated(t)
+
+	_, err := NewProducts(pool).UpdateProduct(context.Background(), 999, inventory.ProductUpdate{Name: strPtr("Pallet jack")})
+	if !errors.Is(err, inventory.ErrNotFound) {
+		t.Errorf("UpdateProduct error = %v, want ErrNotFound", err)
+	}
+}
+
 func TestProductsGetProductNotFound(t *testing.T) {
 	pool := pgtest.Migrated(t)
 

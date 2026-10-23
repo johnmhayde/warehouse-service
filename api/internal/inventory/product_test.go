@@ -18,7 +18,8 @@ type fakeProducts struct {
 	gotActorID int64
 	got        NewProduct
 
-	// product is what GetProduct returns; gotID is the id it was asked for.
+	// product is what GetProduct and UpdateProduct return; gotID is the id
+	// they were asked for.
 	product Product
 	gotID   int64
 
@@ -26,6 +27,8 @@ type fakeProducts struct {
 	// gotFilter is the filter it was given.
 	list      []Product
 	gotFilter ProductFilter
+
+	gotUpdate ProductUpdate
 }
 
 func (f *fakeProducts) ListProducts(ctx context.Context, filter ProductFilter) ([]Product, error) {
@@ -35,6 +38,16 @@ func (f *fakeProducts) ListProducts(ctx context.Context, filter ProductFilter) (
 		return nil, f.err
 	}
 	return f.list[:min(filter.Limit, len(f.list))], nil
+}
+
+func (f *fakeProducts) UpdateProduct(ctx context.Context, id int64, u ProductUpdate) (Product, error) {
+	f.called = true
+	f.gotID = id
+	f.gotUpdate = u
+	if f.err != nil {
+		return Product{}, f.err
+	}
+	return f.product, nil
 }
 
 func (f *fakeProducts) CreateProduct(ctx context.Context, actorID int64, p NewProduct) (Product, error) {
@@ -461,5 +474,181 @@ func TestListProductsRepositoryError(t *testing.T) {
 	}
 	if page.Products != nil || page.Next != nil {
 		t.Errorf("ListProducts = %+v with an error, want the zero ProductPage", page)
+	}
+}
+
+func ptr(s string) *string { return &s }
+
+// formatUpdate shows the values u points to rather than the pointers.
+func formatUpdate(u ProductUpdate) string {
+	f := func(p *string) string {
+		if p == nil {
+			return "<unset>"
+		}
+		return fmt.Sprintf("%q", *p)
+	}
+	return fmt.Sprintf("{Name:%s Description:%s Category:%s}", f(u.Name), f(u.Description), f(u.Category))
+}
+
+func TestUpdateProductNormalizes(t *testing.T) {
+	tests := []struct {
+		name string
+		in   ProductUpdate
+		want ProductUpdate
+	}{
+		{"name only", ProductUpdate{Name: ptr("Pallet jack")}, ProductUpdate{Name: ptr("Pallet jack")}},
+		{
+			"trims name and category",
+			ProductUpdate{Name: ptr("  Pallet jack\t"), Description: ptr("  kept as is "), Category: ptr(" Handling ")},
+			ProductUpdate{Name: ptr("Pallet jack"), Description: ptr("  kept as is "), Category: ptr("Handling")},
+		},
+		{"empty description", ProductUpdate{Description: ptr("")}, ProductUpdate{Description: ptr("")}},
+		{"empty category clears it", ProductUpdate{Category: ptr("")}, ProductUpdate{Category: ptr("")}},
+		{"blank category clears it", ProductUpdate{Category: ptr(" \t ")}, ProductUpdate{Category: ptr("")}},
+		{
+			"longest allowed fields",
+			ProductUpdate{Name: ptr(strings.Repeat("é", 200)), Description: ptr(strings.Repeat("é", 2000)), Category: ptr(strings.Repeat("é", 100))},
+			ProductUpdate{Name: ptr(strings.Repeat("é", 200)), Description: ptr(strings.Repeat("é", 2000)), Category: ptr(strings.Repeat("é", 100))},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := &fakeProducts{product: Product{ID: 7}}
+
+			got, err := NewProductService(repo).UpdateProduct(context.Background(), admin, 7, tt.in)
+			if err != nil {
+				t.Fatalf("UpdateProduct: %v", err)
+			}
+
+			if repo.gotID != 7 {
+				t.Errorf("repository got id %d, want 7", repo.gotID)
+			}
+			if !reflect.DeepEqual(repo.gotUpdate, tt.want) {
+				t.Errorf("repository got %s, want %s", formatUpdate(repo.gotUpdate), formatUpdate(tt.want))
+			}
+			if got.ID != 7 {
+				t.Errorf("UpdateProduct = %+v, want the repository's product", got)
+			}
+		})
+	}
+}
+
+func TestUpdateProductDoesNotChangeCallersValues(t *testing.T) {
+	name := "  Pallet jack "
+	repo := &fakeProducts{}
+
+	if _, err := NewProductService(repo).UpdateProduct(context.Background(), admin, 1, ProductUpdate{Name: &name}); err != nil {
+		t.Fatalf("UpdateProduct: %v", err)
+	}
+
+	if name != "  Pallet jack " {
+		t.Errorf("caller's name changed to %q", name)
+	}
+}
+
+func TestUpdateProductValidation(t *testing.T) {
+	tests := []struct {
+		name    string
+		in      ProductUpdate
+		wantErr string
+	}{
+		{"empty name", ProductUpdate{Name: ptr("")}, "name must not be blank"},
+		{"blank name", ProductUpdate{Name: ptr(" \t\n")}, "name must not be blank"},
+		{"long name", ProductUpdate{Name: ptr(strings.Repeat("a", 201))}, "name must be at most 200 characters"},
+		{"long description", ProductUpdate{Description: ptr(strings.Repeat("é", 2001))}, "description must be at most 2000 characters"},
+		{"long category", ProductUpdate{Category: ptr(strings.Repeat("a", 101))}, "category must be at most 100 characters"},
+		{"NUL in name", ProductUpdate{Name: ptr("a\x00b")}, "name must not contain NUL characters"},
+		{"NUL in description", ProductUpdate{Description: ptr("a\x00")}, "description must not contain NUL characters"},
+		{"NUL in category", ProductUpdate{Category: ptr("\x00a")}, "category must not contain NUL characters"},
+		{"valid name, long category", ProductUpdate{Name: ptr("x"), Category: ptr(strings.Repeat("a", 101))}, "category must be at most 100 characters"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := &fakeProducts{}
+
+			_, err := NewProductService(repo).UpdateProduct(context.Background(), admin, 1, tt.in)
+
+			var verr *ValidationError
+			if !errors.As(err, &verr) {
+				t.Fatalf("UpdateProduct error = %v, want a *ValidationError", err)
+			}
+			if verr.Error() != tt.wantErr {
+				t.Errorf("error = %q, want %q", verr.Error(), tt.wantErr)
+			}
+			if repo.called {
+				t.Error("repository called for an invalid update")
+			}
+		})
+	}
+}
+
+func TestUpdateProductEmpty(t *testing.T) {
+	repo := &fakeProducts{}
+
+	_, err := NewProductService(repo).UpdateProduct(context.Background(), admin, 1, ProductUpdate{})
+
+	if !errors.Is(err, ErrEmptyUpdate) {
+		t.Errorf("UpdateProduct error = %v, want ErrEmptyUpdate", err)
+	}
+	if repo.called {
+		t.Error("repository called for an empty update")
+	}
+}
+
+func TestUpdateProductForbidden(t *testing.T) {
+	tests := []struct {
+		name string
+		in   ProductUpdate
+	}{
+		{"valid update", ProductUpdate{Name: ptr("Pallet jack")}},
+		// The role is checked first, so a requester can't probe the rules.
+		{"invalid update", ProductUpdate{Name: ptr(" ")}},
+		{"empty update", ProductUpdate{}},
+	}
+	// The zero Actor is anonymous and must never pass the admin check.
+	for _, actor := range []Actor{requester, {}} {
+		for _, tt := range tests {
+			t.Run(fmt.Sprintf("%+v %s", actor, tt.name), func(t *testing.T) {
+				repo := &fakeProducts{}
+
+				_, err := NewProductService(repo).UpdateProduct(context.Background(), actor, 1, tt.in)
+
+				if !errors.Is(err, ErrForbidden) {
+					t.Errorf("UpdateProduct error = %v, want ErrForbidden", err)
+				}
+				if repo.called {
+					t.Error("repository called for a non-admin")
+				}
+			})
+		}
+	}
+}
+
+func TestUpdateProductRepositoryError(t *testing.T) {
+	for _, want := range []error{ErrNotFound, errors.New("db down")} {
+		repo := &fakeProducts{err: errors.Join(errors.New("postgres: update product"), want)}
+
+		_, err := NewProductService(repo).UpdateProduct(context.Background(), admin, 1, ProductUpdate{Name: ptr("x")})
+
+		if !errors.Is(err, want) {
+			t.Errorf("UpdateProduct error = %v, want %v", err, want)
+		}
+	}
+}
+
+func TestProductUpdateFields(t *testing.T) {
+	tests := []struct {
+		in   ProductUpdate
+		want []string
+	}{
+		{ProductUpdate{}, nil},
+		{ProductUpdate{Category: ptr("")}, []string{"category"}},
+		{ProductUpdate{Category: ptr("x"), Name: ptr("y")}, []string{"name", "category"}},
+		{ProductUpdate{Name: ptr(""), Description: ptr(""), Category: ptr("")}, []string{"name", "description", "category"}},
+	}
+	for _, tt := range tests {
+		if got := tt.in.Fields(); !reflect.DeepEqual(got, tt.want) {
+			t.Errorf("%s.Fields() = %v, want %v", formatUpdate(tt.in), got, tt.want)
+		}
 	}
 }

@@ -31,6 +31,23 @@ func decodeJSON(w http.ResponseWriter, r *http.Request, v any) error {
 	return nil
 }
 
+// optional is a request field that records whether the body had it and
+// whether it was null, which a pointer field can't tell apart.
+type optional[T any] struct {
+	Set   bool
+	Null  bool
+	Value T
+}
+
+func (o *optional[T]) UnmarshalJSON(b []byte) error {
+	o.Set = true
+	if string(b) == "null" {
+		o.Null = true
+		return nil
+	}
+	return json.Unmarshal(b, &o.Value)
+}
+
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)

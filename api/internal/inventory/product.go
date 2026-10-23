@@ -77,6 +77,33 @@ const (
 	MaxProductLimit     = 100
 )
 
+// ProductUpdate is a change to a product's catalog details. A nil field is
+// left as it is, and at least one field must be set. A Category that is
+// empty or blank clears the category (uncategorized). The owned count
+// (TotalQuantity) can't be changed here: it only changes through stock
+// adjustments.
+type ProductUpdate struct {
+	Name        *string
+	Description *string
+	Category    *string
+}
+
+// Fields returns the products column names of the fields u sets, in a
+// fixed order.
+func (u ProductUpdate) Fields() []string {
+	var fields []string
+	if u.Name != nil {
+		fields = append(fields, "name")
+	}
+	if u.Description != nil {
+		fields = append(fields, "description")
+	}
+	if u.Category != nil {
+		fields = append(fields, "category")
+	}
+	return fields
+}
+
 // Limits on product fields, in characters (runes). MaxNameLen is exported
 // so the HTTP layer can bound the name inside a page cursor.
 const (
@@ -96,6 +123,8 @@ var (
 	ErrNotFound     = errors.New("product not found")
 	ErrDuplicateSKU = errors.New("product with this SKU already exists")
 	ErrForbidden    = errors.New("admin role required")
+	// ErrEmptyUpdate means a ProductUpdate sets no fields.
+	ErrEmptyUpdate = errors.New("no fields to update")
 
 	// ErrHidden means the product exists but the caller may not see it. It
 	// wraps ErrNotFound, so callers that only check for ErrNotFound treat
@@ -139,6 +168,11 @@ type ProductRepository interface {
 	// name and then id, starting after f.After. f is already normalized:
 	// Query and Category are trimmed, and "" means no filter.
 	ListProducts(ctx context.Context, f ProductFilter) ([]Product, error)
+	// UpdateProduct applies u, which is normalized and sets at least one
+	// field, to the product with this id, active or not, and returns the
+	// updated product, or an error wrapping ErrNotFound if there is none.
+	// It never changes TotalQuantity.
+	UpdateProduct(ctx context.Context, id int64, u ProductUpdate) (Product, error)
 }
 
 // ProductService holds the product catalog's business logic.
@@ -210,6 +244,22 @@ func (s *ProductService) ListProducts(ctx context.Context, actor Actor, f Produc
 	}, nil
 }
 
+// UpdateProduct changes the name, description or category of the product
+// with this id, leaving the fields u doesn't set as they are. Only admins
+// may update products, inactive ones included; the role is checked before u
+// is validated, so other callers learn nothing about the rules. Name and
+// category are trimmed as in CreateProduct, and a blank category clears it.
+func (s *ProductService) UpdateProduct(ctx context.Context, actor Actor, id int64, u ProductUpdate) (Product, error) {
+	if !actor.Admin {
+		return Product{}, ErrForbidden
+	}
+	u, err := u.normalize()
+	if err != nil {
+		return Product{}, err
+	}
+	return s.repo.UpdateProduct(ctx, id, u)
+}
+
 // normalize trims p's name and category and checks every field except the
 // SKU, which ParseSKU has already checked.
 func (p NewProduct) normalize() (NewProduct, error) {
@@ -222,22 +272,13 @@ func (p NewProduct) normalize() (NewProduct, error) {
 	if p.TotalQuantity < 0 || p.TotalQuantity > maxTotalQuantity {
 		return NewProduct{}, &ValidationError{"total_quantity", fmt.Sprintf("must be between 0 and %d", maxTotalQuantity)}
 	}
-	for _, f := range []struct {
-		name   string
-		value  string
-		maxLen int
-	}{
-		{"name", p.Name, MaxNameLen},
-		{"description", p.Description, maxDescriptionLen},
-		{"category", p.Category, maxCategoryLen},
+	for _, err := range []error{
+		checkText("name", p.Name, MaxNameLen),
+		checkText("description", p.Description, maxDescriptionLen),
+		checkText("category", p.Category, maxCategoryLen),
 	} {
-		if utf8.RuneCountInString(f.value) > f.maxLen {
-			return NewProduct{}, &ValidationError{f.name, fmt.Sprintf("must be at most %d characters", f.maxLen)}
-		}
-		// Postgres text can't hold NUL, so reject it here rather than fail
-		// in the store.
-		if strings.ContainsRune(f.value, 0) {
-			return NewProduct{}, &ValidationError{f.name, "must not contain NUL characters"}
+		if err != nil {
+			return NewProduct{}, err
 		}
 	}
 	return p, nil
@@ -253,20 +294,58 @@ func (f ProductFilter) normalize() (ProductFilter, error) {
 	if f.Limit < 1 || f.Limit > MaxProductLimit {
 		return ProductFilter{}, &ValidationError{"limit", fmt.Sprintf("must be between 1 and %d", MaxProductLimit)}
 	}
-	for _, p := range []struct {
-		name   string
-		value  string
-		maxLen int
-	}{
-		{"q", f.Query, MaxNameLen},
-		{"category", f.Category, maxCategoryLen},
+	for _, err := range []error{
+		checkText("q", f.Query, MaxNameLen),
+		checkText("category", f.Category, maxCategoryLen),
 	} {
-		if utf8.RuneCountInString(p.value) > p.maxLen {
-			return ProductFilter{}, &ValidationError{p.name, fmt.Sprintf("must be at most %d characters", p.maxLen)}
-		}
-		if strings.ContainsRune(p.value, 0) {
-			return ProductFilter{}, &ValidationError{p.name, "must not contain NUL characters"}
+		if err != nil {
+			return ProductFilter{}, err
 		}
 	}
 	return f, nil
+}
+
+// normalize trims u's name and category and checks the fields u sets by
+// the same rules as NewProduct.normalize.
+func (u ProductUpdate) normalize() (ProductUpdate, error) {
+	if u.Name == nil && u.Description == nil && u.Category == nil {
+		return ProductUpdate{}, ErrEmptyUpdate
+	}
+	if u.Name != nil {
+		name := strings.TrimSpace(*u.Name)
+		if name == "" {
+			return ProductUpdate{}, &ValidationError{"name", "must not be blank"}
+		}
+		if err := checkText("name", name, MaxNameLen); err != nil {
+			return ProductUpdate{}, err
+		}
+		u.Name = &name
+	}
+	if u.Description != nil {
+		if err := checkText("description", *u.Description, maxDescriptionLen); err != nil {
+			return ProductUpdate{}, err
+		}
+	}
+	if u.Category != nil {
+		category := strings.TrimSpace(*u.Category)
+		if err := checkText("category", category, maxCategoryLen); err != nil {
+			return ProductUpdate{}, err
+		}
+		u.Category = &category
+	}
+	return u, nil
+}
+
+// checkText checks that a text field is at most maxLen characters and
+// holds no NUL.
+func checkText(field, value string, maxLen int) error {
+	if utf8.RuneCountInString(value) > maxLen {
+		return &ValidationError{field, fmt.Sprintf("must be at most %d characters", maxLen)}
+	}
+	// Postgres text can't hold NUL, so reject it here rather than fail in
+	// the store.
+	if strings.ContainsRune(value, 0) {
+		return &ValidationError{field, "must not contain NUL characters"}
+	}
+	return nil
 }
