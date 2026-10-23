@@ -22,6 +22,7 @@ type ProductService interface {
 	CreateProduct(ctx context.Context, actor inventory.Actor, p inventory.NewProduct) (inventory.Product, error)
 	GetProduct(ctx context.Context, actor inventory.Actor, id int64) (inventory.Product, error)
 	ListProducts(ctx context.Context, actor inventory.Actor, f inventory.ProductFilter) (inventory.ProductPage, error)
+	UpdateProduct(ctx context.Context, actor inventory.Actor, id int64, u inventory.ProductUpdate) (inventory.Product, error)
 }
 
 type handler struct {
@@ -43,4 +44,5 @@ func Register(mux *http.ServeMux, products ProductService, users identity.Users)
 	handle("GET "+Prefix+"/products", h.listProducts)
 	handle("GET "+Prefix+"/products/{id}", h.getProduct)
 	handle("POST "+Prefix+"/admin/products", h.createProduct)
+	handle("PATCH "+Prefix+"/admin/products/{id}", h.updateProduct)
 }

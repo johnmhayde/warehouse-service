@@ -36,7 +36,7 @@ servers:
 security: []
 tags:
   - name: products
-    description: The product catalog. Creating products is admin only.
+    description: The product catalog. Creating and updating products is admin only.
   - name: health
     description: Liveness and readiness probes for container runtimes and load balancers
 paths:
@@ -442,6 +442,182 @@ paths:
                 $ref: '#/components/schemas/Error'
               example:
                 error: internal error
+  /api/v1/admin/products/{id}:
+    patch:
+      operationId: updateProduct
+      summary: Update a product's details
+      description: |
+        Changes a product's `name`, `description` or `category`. Admins
+        only; inactive products can be updated too. A field the body leaves
+        out is unchanged, and at least one field must be sent. `name` and
+        `category` are trimmed as on create; a `null`, empty or blank
+        `category` clears it (uncategorized). `name` and `description` may
+        not be `null`. `updated_at` is set to the time of the update.
+
+        Stock can't be changed here: `total_quantity` only changes through
+        stock adjustments, so a body that contains it, with any value, gets
+        a 400 that says so. Other fields of `Product` (`sku`, `active`, ...)
+        are unknown fields and get `invalid request body`.
+
+        Checks run in this order: the caller must be identified (401); the
+        id must be valid (400); the body must be a single JSON object of at
+        most 64 KiB (413) with only the documented fields, no
+        `total_quantity` and no null `name` or `description` (400); the
+        caller must be an admin (403); then at least one field must be sent
+        and the product rules apply (400), and the product must exist
+        (404). So a non-admin gets 403 for any request that passes the
+        shape checks (a valid id, a body that decodes, no `total_quantity`
+        and no null `name` or `description`), whatever its other field
+        values. The
+        `Content-Type` header is not checked; the body is always parsed as
+        JSON.
+      tags: [products]
+      security:
+        - devUser: []
+      parameters:
+        - $ref: '#/components/parameters/ProductID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateProductRequest'
+            examples:
+              rename:
+                summary: Change the name only
+                value:
+                  name: Hand pallet truck
+              full:
+                summary: Every field
+                value:
+                  name: Hand pallet truck
+                  description: Manual, 2500 kg capacity
+                  category: Handling
+              clearCategory:
+                summary: Make the product uncategorized
+                value:
+                  category: null
+      responses:
+        '200':
+          description: The product was updated. The body is the whole product after the update.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Product'
+              example:
+                id: 42
+                sku: '000123'
+                name: Hand pallet truck
+                description: Manual, 2500 kg capacity
+                category: Handling
+                total_quantity: 140
+                active: true
+                created_at: '2026-10-22T01:14:50.123456Z'
+                updated_at: '2026-10-22T02:44:50.654321Z'
+        '400':
+          description: |
+            The id is not a positive integer of at most 9223372036854775807
+            written in ASCII digits; the body is not a single JSON object
+            matching `UpdateProductRequest` (malformed JSON, an unknown
+            field, a wrong type, or data after the object); the body tries
+            to change `total_quantity`; `name` or `description` is `null`;
+            the body sets no field; or a field breaks a product rule. Rule
+            violations name the field.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                invalidID:
+                  summary: Id is not a positive integer
+                  value:
+                    error: invalid product id
+                invalidBody:
+                  summary: Malformed JSON, unknown field, wrong type or trailing data
+                  value:
+                    error: invalid request body
+                totalQuantity:
+                  summary: The body contains total_quantity
+                  value:
+                    error: "total_quantity can't be changed here; use stock adjustments"
+                nullName:
+                  value:
+                    error: name must not be null
+                nullDescription:
+                  value:
+                    error: description must not be null
+                noFields:
+                  summary: None of name, description and category was sent
+                  value:
+                    error: no fields to update
+                nameBlank:
+                  summary: Name empty or blank
+                  value:
+                    error: name must not be blank
+                nameTooLong:
+                  value:
+                    error: name must be at most 200 characters
+                descriptionTooLong:
+                  value:
+                    error: description must be at most 2000 characters
+                categoryTooLong:
+                  value:
+                    error: category must be at most 100 characters
+                nulCharacter:
+                  summary: A text field contains U+0000 (name, description or category)
+                  value:
+                    error: name must not contain NUL characters
+        '401':
+          description: |
+            No `X-Dev-User` header was sent, or it names no active user
+            (`unknown dev user`, from the identity middleware).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                noIdentity:
+                  summary: No X-Dev-User header
+                  value:
+                    error: authentication required
+                unknownUser:
+                  summary: X-Dev-User names no active user
+                  value:
+                    error: unknown dev user
+        '403':
+          description: The caller is not an admin.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error: admin role required
+        '404':
+          description: No product has this id.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error: product not found
+        '413':
+          description: The request body is larger than 64 KiB.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error: request body too large
+        '500':
+          description: |
+            The product could not be updated, or the `X-Dev-User` lookup
+            failed. Internal details are logged, never returned.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error: internal error
   /healthz:
     get:
       operationId: getLiveness
@@ -565,6 +741,30 @@ components:
           default: 0
           examples:
             - 40
+    UpdateProductRequest:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      description: |
+        A partial update: a field left out is unchanged. `total_quantity`
+        is not accepted (400); stock changes only through stock adjustments.
+      properties:
+        name:
+          type: string
+          description: Display name. Trimmed; must not be blank. At most 200 characters after trimming.
+          maxLength: 200
+          examples:
+            - Hand pallet truck
+        description:
+          type: string
+          description: Free-text description; empty clears it. Not trimmed.
+          maxLength: 2000
+        category:
+          type: [string, 'null']
+          description: Category name, trimmed. Null, empty or blank clears it (uncategorized).
+          maxLength: 100
+          examples:
+            - Handling
     Product:
       type: object
       additionalProperties: false
@@ -593,7 +793,7 @@ components:
         total_quantity:
           type: integer
           minimum: 0
-          description: Units the warehouse owns, including any that are rented out. For a new product, the `total_quantity` it was created with.
+          description: Units the warehouse owns, including any that are rented out. For a new product, the `total_quantity` it was created with. It changes only through stock adjustments, never through a product update.
         active:
           type: boolean
           description: Inactive products are hidden from normal use rather than deleted. New products are active.

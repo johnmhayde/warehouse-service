@@ -155,5 +155,28 @@ func escapeLike(s string) string {
 	return strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(s)
 }
 
+// UpdateProduct sets the fields u sets on the product with this id, active
+// or not, in one statement. An empty category is stored as NULL.
+// total_quantity is never written, and updated_at is set by the
+// products_set_updated_at trigger.
+func (s *Products) UpdateProduct(ctx context.Context, id int64, u inventory.ProductUpdate) (inventory.Product, error) {
+	p, err := scanProduct(s.pool.QueryRow(ctx,
+		`UPDATE products SET
+			name = COALESCE($2, name),
+			description = COALESCE($3, description),
+			category = CASE WHEN $4 THEN NULLIF($5, '') ELSE category END
+		WHERE id = $1
+		RETURNING `+productColumns,
+		id, u.Name, u.Description, u.Category != nil, u.Category,
+	))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return inventory.Product{}, inventory.ErrNotFound
+	}
+	if err != nil {
+		return inventory.Product{}, fmt.Errorf("update product: %w", err)
+	}
+	return p, nil
+}
+
 // uniqueViolation is the Postgres SQLSTATE for unique_violation.
 const uniqueViolation = "23505"

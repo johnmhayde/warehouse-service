@@ -2,6 +2,7 @@ package v1
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -22,6 +23,43 @@ type createProductRequest struct {
 	Description   string `json:"description"`
 	Category      string `json:"category"`
 	TotalQuantity int    `json:"total_quantity"`
+}
+
+// updateProductRequest is a partial update: a field the body leaves out is
+// unchanged.
+type updateProductRequest struct {
+	Name        optional[string] `json:"name"`
+	Description optional[string] `json:"description"`
+	// Category may be null, which clears it like "".
+	Category optional[string] `json:"category"`
+	// TotalQuantity is decoded only to refuse it with a specific message:
+	// the owned count changes only through stock adjustments (ADR 0003).
+	TotalQuantity optional[json.RawMessage] `json:"total_quantity"`
+}
+
+// toUpdate converts r to an inventory.ProductUpdate. A request that sets
+// total_quantity, or sets name or description to null, gets a client-safe
+// message instead.
+func (r updateProductRequest) toUpdate() (inventory.ProductUpdate, string) {
+	switch {
+	case r.TotalQuantity.Set:
+		return inventory.ProductUpdate{}, "total_quantity can't be changed here; use stock adjustments"
+	case r.Name.Null:
+		return inventory.ProductUpdate{}, "name must not be null"
+	case r.Description.Null:
+		return inventory.ProductUpdate{}, "description must not be null"
+	}
+	var u inventory.ProductUpdate
+	if r.Name.Set {
+		u.Name = &r.Name.Value
+	}
+	if r.Description.Set {
+		u.Description = &r.Description.Value
+	}
+	if r.Category.Set {
+		u.Category = &r.Category.Value
+	}
+	return u, ""
 }
 
 type productResponse struct {
@@ -286,6 +324,82 @@ func parseProductFilter(rawQuery string) (inventory.ProductFilter, error) {
 		f.After = &c
 	}
 	return f, nil
+}
+
+// updateProduct handles PATCH /api/v1/admin/products/{id}. The path id and
+// the body's shape (valid JSON, known fields, no total_quantity, no null
+// name or description) are checked before the service runs; the service
+// then checks the admin role before the product rules, so a non-admin gets
+// 403 for any well-formed request.
+func (h *handler) updateProduct(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	id, ok := identity.From(ctx)
+	if !ok {
+		addProductOutcome(ctx, "unauthenticated")
+		writeError(w, http.StatusUnauthorized, "authentication required")
+		return
+	}
+	telemetry.Add(ctx, slog.Int64("user.id", id.UserID))
+
+	productID, ok := parseProductID(r.PathValue("id"))
+	if !ok {
+		addProductOutcome(ctx, "invalid")
+		writeError(w, http.StatusBadRequest, "invalid product id")
+		return
+	}
+	telemetry.Add(ctx, slog.Int64("product.id", productID))
+
+	var req updateProductRequest
+	if err := decodeJSON(w, r, &req); err != nil {
+		addProductOutcome(ctx, "invalid")
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			writeError(w, http.StatusRequestEntityTooLarge, "request body too large")
+			return
+		}
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	update, msg := req.toUpdate()
+	if msg != "" {
+		addProductOutcome(ctx, "invalid")
+		writeError(w, http.StatusBadRequest, msg)
+		return
+	}
+
+	product, err := h.products.UpdateProduct(ctx,
+		inventory.Actor{UserID: id.UserID, Admin: id.IsAdmin()}, productID, update)
+	var invalid *inventory.ValidationError
+	switch {
+	case errors.As(err, &invalid):
+		addProductOutcome(ctx, "invalid")
+		writeError(w, http.StatusBadRequest, invalid.Error())
+		return
+	case errors.Is(err, inventory.ErrEmptyUpdate):
+		addProductOutcome(ctx, "invalid")
+		writeError(w, http.StatusBadRequest, "no fields to update")
+		return
+	case errors.Is(err, inventory.ErrForbidden):
+		addProductOutcome(ctx, "forbidden")
+		writeError(w, http.StatusForbidden, "admin role required")
+		return
+	case errors.Is(err, inventory.ErrNotFound):
+		addProductOutcome(ctx, "not_found")
+		writeError(w, http.StatusNotFound, "product not found")
+		return
+	case err != nil:
+		addProductOutcome(ctx, "error")
+		telemetry.Add(ctx, slog.String("error.message", err.Error()))
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+
+	telemetry.Add(ctx,
+		slog.String("product.sku", string(product.SKU)),
+		slog.String("product.updated_fields", strings.Join(update.Fields(), ",")),
+	)
+	addProductOutcome(ctx, "updated")
+	writeJSON(w, http.StatusOK, newProductResponse(product))
 }
 
 // parseProductID parses a product id from a path: a positive decimal

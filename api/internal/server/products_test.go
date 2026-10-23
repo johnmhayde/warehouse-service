@@ -101,6 +101,85 @@ func TestCreateProductEndToEnd(t *testing.T) {
 	}
 }
 
+// TestUpdateProductEndToEnd sends requests through the server's full
+// handler, wired the way cmd/api wires it, against a migrated database.
+func TestUpdateProductEndToEnd(t *testing.T) {
+	pool := pgtest.Migrated(t)
+	ctx := context.Background()
+	for _, u := range []struct{ email, role string }{
+		{"admin@example.com", "admin"},
+		{"requester@example.com", "requester"},
+	} {
+		if _, err := pool.Exec(ctx,
+			"INSERT INTO users (email, display_name, role) VALUES ($1, $2, $3)",
+			u.email, "Test user", u.role,
+		); err != nil {
+			t.Fatalf("insert user %s: %v", u.email, err)
+		}
+	}
+	var id int64
+	if err := pool.QueryRow(ctx,
+		"INSERT INTO products (sku, name, description, category) VALUES ('000123', 'Pallet jack', 'Manual', 'Handling') RETURNING id",
+	).Scan(&id); err != nil {
+		t.Fatalf("insert product: %v", err)
+	}
+	path := fmt.Sprintf("/api/v1/admin/products/%d", id)
+
+	logger := slog.New(slog.DiscardHandler)
+	srv := New(config.Config{}, logger, health.New(logger),
+		inventory.NewProductService(postgres.NewProducts(pool)),
+		postgres.NewUsers(pool),
+	)
+
+	// The steps share the database, so they run in order.
+	steps := []struct {
+		name       string
+		devUser    string
+		path       string
+		body       string
+		wantStatus int
+		wantBody   string
+	}{
+		{"admin renames", "admin@example.com", path, `{"name":"Hand pallet truck"}`, http.StatusOK, `"name":"Hand pallet truck","description":"Manual","category":"Handling"`},
+		{"admin clears category", "admin@example.com", path, `{"category":null}`, http.StatusOK, `"name":"Hand pallet truck","description":"Manual","category":null`},
+		{"total quantity", "admin@example.com", path, `{"total_quantity":5}`, http.StatusBadRequest, `{"error":"total_quantity can't be changed here; use stock adjustments"}`},
+		{"requester", "requester@example.com", path, `{"name":"Mine"}`, http.StatusForbidden, `{"error":"admin role required"}`},
+		{"no identity", "", path, `{"name":"Mine"}`, http.StatusUnauthorized, `{"error":"authentication required"}`},
+		{"unknown id", "admin@example.com", fmt.Sprintf("/api/v1/admin/products/%d", id+1000), `{"name":"x"}`, http.StatusNotFound, `{"error":"product not found"}`},
+	}
+	for _, st := range steps {
+		req := httptest.NewRequest(http.MethodPatch, st.path, strings.NewReader(st.body))
+		if st.devUser != "" {
+			req.Header.Set(identity.DevUserHeader, st.devUser)
+		}
+		rec := httptest.NewRecorder()
+		srv.http.Handler.ServeHTTP(rec, req)
+
+		if rec.Code != st.wantStatus {
+			t.Errorf("%s: status = %d, want %d; body %s", st.name, rec.Code, st.wantStatus, rec.Body)
+		}
+		if !strings.Contains(rec.Body.String(), st.wantBody) {
+			t.Errorf("%s: body %s, want it to contain %s", st.name, rec.Body, st.wantBody)
+		}
+	}
+
+	var (
+		name             string
+		categoryIsNull   bool
+		total            int
+		updatedAfterMade bool
+	)
+	if err := pool.QueryRow(ctx,
+		"SELECT name, category IS NULL, total_quantity, updated_at > created_at FROM products WHERE id = $1", id,
+	).Scan(&name, &categoryIsNull, &total, &updatedAfterMade); err != nil {
+		t.Fatalf("query product: %v", err)
+	}
+	if name != "Hand pallet truck" || !categoryIsNull || total != 0 || !updatedAfterMade {
+		t.Errorf("stored name, category IS NULL, total_quantity, updated_at > created_at = %q, %v, %d, %v; want \"Hand pallet truck\", true, 0, true",
+			name, categoryIsNull, total, updatedAfterMade)
+	}
+}
+
 // TestGetProductEndToEnd sends requests through the server's full handler,
 // wired the way cmd/api wires it, against a migrated database.
 func TestGetProductEndToEnd(t *testing.T) {

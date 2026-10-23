@@ -44,6 +44,7 @@ type fakeProducts struct {
 	gotProduct inventory.NewProduct
 	gotID      int64
 	gotFilter  inventory.ProductFilter
+	gotUpdate  inventory.ProductUpdate
 }
 
 func (f *fakeProducts) ListProducts(ctx context.Context, actor inventory.Actor, filter inventory.ProductFilter) (inventory.ProductPage, error) {
@@ -51,6 +52,14 @@ func (f *fakeProducts) ListProducts(ctx context.Context, actor inventory.Actor, 
 	f.gotActor = actor
 	f.gotFilter = filter
 	return f.page, f.err
+}
+
+func (f *fakeProducts) UpdateProduct(ctx context.Context, actor inventory.Actor, id int64, u inventory.ProductUpdate) (inventory.Product, error) {
+	f.called = true
+	f.gotActor = actor
+	f.gotID = id
+	f.gotUpdate = u
+	return f.product, f.err
 }
 
 func (f *fakeProducts) GetProduct(ctx context.Context, actor inventory.Actor, id int64) (inventory.Product, error) {
@@ -343,6 +352,24 @@ func (r stubRepository) ListProducts(ctx context.Context, f inventory.ProductFil
 	return out[:min(f.Limit, len(out))], nil
 }
 
+// UpdateProduct applies u to the products GetProduct serves.
+func (r stubRepository) UpdateProduct(ctx context.Context, id int64, u inventory.ProductUpdate) (inventory.Product, error) {
+	p, err := r.GetProduct(ctx, id)
+	if err != nil {
+		return inventory.Product{}, err
+	}
+	if u.Name != nil {
+		p.Name = *u.Name
+	}
+	if u.Description != nil {
+		p.Description = *u.Description
+	}
+	if u.Category != nil {
+		p.Category = *u.Category
+	}
+	return p, nil
+}
+
 // TestCreateProductWithService runs the handler against the real
 // inventory.ProductService, so the order of the checks and the validation
 // messages are those clients actually see.
@@ -399,6 +426,7 @@ func TestRoutesResolveDevUser(t *testing.T) {
 		{"get product", http.MethodGet, "/api/v1/products/42", ""},
 		{"list products", http.MethodGet, "/api/v1/products", ""},
 		{"create product", http.MethodPost, "/api/v1/admin/products", `{"sku":"123456","name":"Pallet jack"}`},
+		{"update product", http.MethodPatch, "/api/v1/admin/products/42", `{"name":"Pallet jack"}`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name+" unknown user", func(t *testing.T) {
@@ -973,6 +1001,318 @@ func TestListProductsWithService(t *testing.T) {
 			}
 			if (body.NextCursor != nil) != tt.wantNext {
 				t.Errorf("next_cursor = %v, want present %v", body.NextCursor, tt.wantNext)
+			}
+		})
+	}
+}
+
+// patchProduct sends body to PATCH path through a mux with the v1 routes
+// registered. id, if not nil, is put in the request context the way
+// identity.DevHeader does. It returns the response and the request's
+// telemetry event.
+func patchProduct(t *testing.T, products ProductService, id *identity.Identity, path, body string) (*httptest.ResponseRecorder, *telemetry.Event) {
+	t.Helper()
+	mux := http.NewServeMux()
+	Register(mux, products, fakeUsers{})
+
+	req := httptest.NewRequest(http.MethodPatch, path, strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	ctx, event := telemetry.NewContext(req.Context())
+	if id != nil {
+		ctx = identity.With(ctx, *id)
+	}
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req.WithContext(ctx))
+	return rec, event
+}
+
+func strPtr(s string) *string { return &s }
+
+func TestUpdateProductUpdated(t *testing.T) {
+	created := time.Date(2026, 10, 21, 21, 14, 50, 123456000, time.FixedZone("EDT", -4*60*60))
+	updated := created.Add(90 * time.Minute)
+	tests := []struct {
+		name        string
+		body        string
+		product     inventory.Product
+		wantRequest inventory.ProductUpdate
+		wantFields  string
+		wantJSON    string
+	}{
+		{
+			name: "all fields",
+			body: `{"name":"Pallet jack","description":"Manual, 2500 kg","category":"Handling"}`,
+			product: inventory.Product{
+				ID: 42, SKU: "000123", Name: "Pallet jack", Description: "Manual, 2500 kg", Category: "Handling",
+				TotalQuantity: 140, Active: true, CreatedAt: created, UpdatedAt: updated,
+			},
+			wantRequest: inventory.ProductUpdate{Name: strPtr("Pallet jack"), Description: strPtr("Manual, 2500 kg"), Category: strPtr("Handling")},
+			wantFields:  "name,description,category",
+			wantJSON: `{"id":42,"sku":"000123","name":"Pallet jack","description":"Manual, 2500 kg","category":"Handling",` +
+				`"total_quantity":140,"active":true,` +
+				`"created_at":"2026-10-22T01:14:50.123456Z","updated_at":"2026-10-22T02:44:50.123456Z"}`,
+		},
+		{
+			name: "name only",
+			body: `{"name":"Pallet jack"}`,
+			product: inventory.Product{
+				ID: 42, SKU: "000123", Name: "Pallet jack", Category: "Handling", Active: true, CreatedAt: created, UpdatedAt: updated,
+			},
+			wantRequest: inventory.ProductUpdate{Name: strPtr("Pallet jack")},
+			wantFields:  "name",
+			wantJSON: `{"id":42,"sku":"000123","name":"Pallet jack","description":"","category":"Handling",` +
+				`"total_quantity":0,"active":true,` +
+				`"created_at":"2026-10-22T01:14:50.123456Z","updated_at":"2026-10-22T02:44:50.123456Z"}`,
+		},
+		{
+			name: "null category clears it",
+			body: `{"category":null}`,
+			product: inventory.Product{
+				ID: 42, SKU: "000123", Name: "Pallet jack", Active: true, CreatedAt: created, UpdatedAt: updated,
+			},
+			wantRequest: inventory.ProductUpdate{Category: strPtr("")},
+			wantFields:  "category",
+			wantJSON: `{"id":42,"sku":"000123","name":"Pallet jack","description":"","category":null,` +
+				`"total_quantity":0,"active":true,` +
+				`"created_at":"2026-10-22T01:14:50.123456Z","updated_at":"2026-10-22T02:44:50.123456Z"}`,
+		},
+		{
+			// A key sent twice: the last one wins, as for every field.
+			name: "null name then a name",
+			body: `{"name":null,"name":"Pallet jack"}`,
+			product: inventory.Product{
+				ID: 42, SKU: "000123", Name: "Pallet jack", Active: true, CreatedAt: created, UpdatedAt: updated,
+			},
+			wantRequest: inventory.ProductUpdate{Name: strPtr("Pallet jack")},
+			wantFields:  "name",
+			wantJSON: `{"id":42,"sku":"000123","name":"Pallet jack","description":"","category":null,` +
+				`"total_quantity":0,"active":true,` +
+				`"created_at":"2026-10-22T01:14:50.123456Z","updated_at":"2026-10-22T02:44:50.123456Z"}`,
+		},
+		{
+			name: "category then null",
+			body: `{"category":"Handling","category":null}`,
+			product: inventory.Product{
+				ID: 42, SKU: "000123", Name: "Pallet jack", Active: true, CreatedAt: created, UpdatedAt: updated,
+			},
+			wantRequest: inventory.ProductUpdate{Category: strPtr("")},
+			wantFields:  "category",
+			wantJSON: `{"id":42,"sku":"000123","name":"Pallet jack","description":"","category":null,` +
+				`"total_quantity":0,"active":true,` +
+				`"created_at":"2026-10-22T01:14:50.123456Z","updated_at":"2026-10-22T02:44:50.123456Z"}`,
+		},
+		{
+			name: "empty category and description",
+			body: `{"description":"","category":""}`,
+			product: inventory.Product{
+				ID: 42, SKU: "000123", Name: "Pallet jack", Active: false, CreatedAt: created, UpdatedAt: updated,
+			},
+			wantRequest: inventory.ProductUpdate{Description: strPtr(""), Category: strPtr("")},
+			wantFields:  "description,category",
+			wantJSON: `{"id":42,"sku":"000123","name":"Pallet jack","description":"","category":null,` +
+				`"total_quantity":0,"active":false,` +
+				`"created_at":"2026-10-22T01:14:50.123456Z","updated_at":"2026-10-22T02:44:50.123456Z"}`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			products := &fakeProducts{product: tt.product}
+
+			rec, event := patchProduct(t, products, &adminID, "/api/v1/admin/products/42", tt.body)
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want %d; body %s", rec.Code, http.StatusOK, rec.Body)
+			}
+			if got := rec.Header().Get("Content-Type"); got != "application/json" {
+				t.Errorf("Content-Type = %q, want application/json", got)
+			}
+			if got := strings.TrimSpace(rec.Body.String()); got != tt.wantJSON {
+				t.Errorf("body =\n%s\nwant\n%s", got, tt.wantJSON)
+			}
+			if want := (inventory.Actor{UserID: 1, Admin: true}); products.gotActor != want {
+				t.Errorf("service called with actor %+v, want %+v", products.gotActor, want)
+			}
+			if products.gotID != 42 {
+				t.Errorf("service called with id %d, want 42", products.gotID)
+			}
+			// DeepEqual compares what the pointers point to.
+			if !reflect.DeepEqual(products.gotUpdate, tt.wantRequest) {
+				t.Errorf("service called with %v, want %v", products.gotUpdate.Fields(), tt.wantRequest.Fields())
+			}
+
+			attrs := eventAttrs(t, event)
+			want := map[string]slog.Value{
+				"user.id":                slog.Int64Value(1),
+				"product.id":             slog.Int64Value(42),
+				"product.sku":            slog.StringValue("000123"),
+				"product.updated_fields": slog.StringValue(tt.wantFields),
+				"product.outcome":        slog.StringValue("updated"),
+			}
+			if len(attrs) != len(want) {
+				t.Errorf("event attrs = %v, want %v", attrs, want)
+			}
+			for k, v := range want {
+				if !attrs[k].Equal(v) {
+					t.Errorf("event %s = %v, want %v", k, attrs[k], v)
+				}
+			}
+		})
+	}
+}
+
+func TestUpdateProductErrors(t *testing.T) {
+	const path = "/api/v1/admin/products/42"
+	valid := `{"name":"Pallet jack"}`
+	tests := []struct {
+		name        string
+		id          *identity.Identity
+		path        string
+		body        string
+		err         error
+		wantStatus  int
+		wantError   string
+		wantOutcome string
+		// wantID is set when the id parsed, so product.id is on the event.
+		wantID bool
+		// wantCalled is set when the body passed the handler's checks, so
+		// the service was called.
+		wantCalled bool
+	}{
+		{"no identity", nil, path, valid, nil, http.StatusUnauthorized, "authentication required", "unauthenticated", false, false},
+		{"no identity, invalid id", nil, "/api/v1/admin/products/abc", valid, nil, http.StatusUnauthorized, "authentication required", "unauthenticated", false, false},
+		{"not a number", &adminID, "/api/v1/admin/products/abc", valid, nil, http.StatusBadRequest, "invalid product id", "invalid", false, false},
+		{"zero", &adminID, "/api/v1/admin/products/0", valid, nil, http.StatusBadRequest, "invalid product id", "invalid", false, false},
+		{"negative", &adminID, "/api/v1/admin/products/-1", valid, nil, http.StatusBadRequest, "invalid product id", "invalid", false, false},
+		{"overflows bigint", &adminID, "/api/v1/admin/products/9223372036854775808", valid, nil, http.StatusBadRequest, "invalid product id", "invalid", false, false},
+		{"invalid id and body", &adminID, "/api/v1/admin/products/abc", `{`, nil, http.StatusBadRequest, "invalid product id", "invalid", false, false},
+		{"empty body", &adminID, path, ``, nil, http.StatusBadRequest, "invalid request body", "invalid", true, false},
+		{"malformed JSON", &adminID, path, `{"name":`, nil, http.StatusBadRequest, "invalid request body", "invalid", true, false},
+		{"not an object", &adminID, path, `["Pallet jack"]`, nil, http.StatusBadRequest, "invalid request body", "invalid", true, false},
+		{"unknown field", &adminID, path, `{"name":"Pallet jack","colour":"red"}`, nil, http.StatusBadRequest, "invalid request body", "invalid", true, false},
+		{"sku", &adminID, path, `{"sku":"123456"}`, nil, http.StatusBadRequest, "invalid request body", "invalid", true, false},
+		{"active", &adminID, path, `{"active":false}`, nil, http.StatusBadRequest, "invalid request body", "invalid", true, false},
+		{"id", &adminID, path, `{"id":7,"name":"Pallet jack"}`, nil, http.StatusBadRequest, "invalid request body", "invalid", true, false},
+		{"wrong type", &adminID, path, `{"category":5}`, nil, http.StatusBadRequest, "invalid request body", "invalid", true, false},
+		{"name wrong type", &adminID, path, `{"name":true}`, nil, http.StatusBadRequest, "invalid request body", "invalid", true, false},
+		{"second object", &adminID, path, valid + `{}`, nil, http.StatusBadRequest, "invalid request body", "invalid", true, false},
+		{"trailing garbage", &adminID, path, valid + ` x`, nil, http.StatusBadRequest, "invalid request body", "invalid", true, false},
+		{"too large", &adminID, path, `{"name":"` + strings.Repeat("a", maxBodyBytes) + `"}`, nil, http.StatusRequestEntityTooLarge, "request body too large", "invalid", true, false},
+		{"total quantity", &adminID, path, `{"total_quantity":5}`, nil, http.StatusBadRequest, "total_quantity can't be changed here; use stock adjustments", "invalid", true, false},
+		{"total quantity with name", &adminID, path, `{"name":"Pallet jack","total_quantity":5}`, nil, http.StatusBadRequest, "total_quantity can't be changed here; use stock adjustments", "invalid", true, false},
+		{"null total quantity", &adminID, path, `{"total_quantity":null}`, nil, http.StatusBadRequest, "total_quantity can't be changed here; use stock adjustments", "invalid", true, false},
+		{"total quantity wrong type", &adminID, path, `{"total_quantity":"5"}`, nil, http.StatusBadRequest, "total_quantity can't be changed here; use stock adjustments", "invalid", true, false},
+		// Stock changes are refused before the role is checked.
+		{"requester, total quantity", &requesterID, path, `{"total_quantity":5}`, nil, http.StatusBadRequest, "total_quantity can't be changed here; use stock adjustments", "invalid", true, false},
+		{"null name", &adminID, path, `{"name":null}`, nil, http.StatusBadRequest, "name must not be null", "invalid", true, false},
+		{"null description", &adminID, path, `{"description":null}`, nil, http.StatusBadRequest, "description must not be null", "invalid", true, false},
+		{"name then null", &adminID, path, `{"name":"Pallet jack","name":null}`, nil, http.StatusBadRequest, "name must not be null", "invalid", true, false},
+		{"empty update", &adminID, path, `{}`, inventory.ErrEmptyUpdate, http.StatusBadRequest, "no fields to update", "invalid", true, true},
+		{"validation error", &adminID, path, valid, &inventory.ValidationError{Field: "name", Reason: "must not be blank"}, http.StatusBadRequest, "name must not be blank", "invalid", true, true},
+		{"forbidden", &requesterID, path, valid, inventory.ErrForbidden, http.StatusForbidden, "admin role required", "forbidden", true, true},
+		{"not found", &adminID, path, valid, inventory.ErrNotFound, http.StatusNotFound, "product not found", "not_found", true, true},
+		{"wrapped not found", &adminID, path, valid, fmt.Errorf("update product: %w", inventory.ErrNotFound), http.StatusNotFound, "product not found", "not_found", true, true},
+		{"store failure", &adminID, path, valid, errors.New("db down: connection refused"), http.StatusInternalServerError, "internal error", "error", true, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			products := &fakeProducts{err: tt.err}
+
+			rec, event := patchProduct(t, products, tt.id, tt.path, tt.body)
+
+			if rec.Code != tt.wantStatus {
+				t.Errorf("status = %d, want %d", rec.Code, tt.wantStatus)
+			}
+			if got := errorBody(t, rec); got != tt.wantError {
+				t.Errorf("error = %q, want %q", got, tt.wantError)
+			}
+			if products.called != tt.wantCalled {
+				t.Errorf("service called = %v, want %v", products.called, tt.wantCalled)
+			}
+
+			attrs := eventAttrs(t, event)
+			if got := attrs["product.outcome"].String(); got != tt.wantOutcome {
+				t.Errorf("event product.outcome = %q, want %q", got, tt.wantOutcome)
+			}
+			if got, ok := attrs["product.id"]; ok != tt.wantID || (ok && got.Int64() != 42) {
+				t.Errorf("event product.id = %v (present %v), want 42 present %v", got, ok, tt.wantID)
+			}
+			for _, k := range []string{"product.sku", "product.updated_fields"} {
+				if _, ok := attrs[k]; ok {
+					t.Errorf("event has %s for a failed request", k)
+				}
+			}
+			if _, ok := attrs["error.message"]; ok != (tt.wantStatus == http.StatusInternalServerError) {
+				t.Errorf("event has error.message = %v, want it only on a 500", ok)
+			}
+			if got, ok := attrs["user.id"]; ok != (tt.id != nil) || (ok && got.Int64() != tt.id.UserID) {
+				t.Errorf("event user.id = %v (present %v), want the caller's id", got, ok)
+			}
+		})
+	}
+}
+
+func TestUpdateProductDoesNotLeakInternalErrors(t *testing.T) {
+	rec, event := patchProduct(t, &fakeProducts{err: errors.New("db down: connection refused")}, &adminID, "/api/v1/admin/products/42", `{"name":"Pallet jack"}`)
+
+	if strings.Contains(rec.Body.String(), "db down") {
+		t.Errorf("response body leaks internal error: %s", rec.Body.String())
+	}
+	if got := eventAttrs(t, event)["error.message"].String(); !strings.Contains(got, "db down") {
+		t.Errorf("event error.message = %q, want the internal error", got)
+	}
+}
+
+// TestUpdateProductWithService runs the handler against the real
+// inventory.ProductService, so the order of the checks and the validation
+// messages are those clients actually see.
+func TestUpdateProductWithService(t *testing.T) {
+	tests := []struct {
+		name       string
+		id         identity.Identity
+		path       string
+		body       string
+		wantStatus int
+		wantError  string
+		// wantInBody, if set, must appear in a successful response.
+		wantInBody string
+	}{
+		{"admin", adminID, "/api/v1/admin/products/1", `{"name":"  Hand pallet truck "}`, http.StatusOK, "", `"name":"Hand pallet truck"`},
+		{"admin, inactive product", adminID, "/api/v1/admin/products/2", `{"description":"Retired"}`, http.StatusOK, "", `"active":false`},
+		{"admin, blank category", adminID, "/api/v1/admin/products/1", `{"category":"  "}`, http.StatusOK, "", `"category":null`},
+		{"admin, unknown product", adminID, "/api/v1/admin/products/3", `{"name":"x"}`, http.StatusNotFound, "product not found", ""},
+		{"requester", requesterID, "/api/v1/admin/products/1", `{"name":"x"}`, http.StatusForbidden, "admin role required", ""},
+		// The role is checked before the product rules and before the
+		// product is looked up...
+		{"requester with blank name", requesterID, "/api/v1/admin/products/1", `{"name":" "}`, http.StatusForbidden, "admin role required", ""},
+		{"requester with empty update", requesterID, "/api/v1/admin/products/1", `{}`, http.StatusForbidden, "admin role required", ""},
+		{"requester, unknown product", requesterID, "/api/v1/admin/products/3", `{"name":"x"}`, http.StatusForbidden, "admin role required", ""},
+		// ...but after the path and the body's shape.
+		{"requester with malformed body", requesterID, "/api/v1/admin/products/1", `{`, http.StatusBadRequest, "invalid request body", ""},
+		{"requester with invalid id", requesterID, "/api/v1/admin/products/x", `{"name":"x"}`, http.StatusBadRequest, "invalid product id", ""},
+		{"empty update", adminID, "/api/v1/admin/products/1", `{}`, http.StatusBadRequest, "no fields to update", ""},
+		{"blank name", adminID, "/api/v1/admin/products/1", `{"name":"  "}`, http.StatusBadRequest, "name must not be blank", ""},
+		{"empty name", adminID, "/api/v1/admin/products/1", `{"name":""}`, http.StatusBadRequest, "name must not be blank", ""},
+		{"long name", adminID, "/api/v1/admin/products/1", `{"name":"` + strings.Repeat("a", 201) + `"}`, http.StatusBadRequest, "name must be at most 200 characters", ""},
+		{"long description", adminID, "/api/v1/admin/products/1", `{"description":"` + strings.Repeat("a", 2001) + `"}`, http.StatusBadRequest, "description must be at most 2000 characters", ""},
+		{"long category", adminID, "/api/v1/admin/products/1", `{"category":"` + strings.Repeat("a", 101) + `"}`, http.StatusBadRequest, "category must be at most 100 characters", ""},
+		{"NUL in description", adminID, "/api/v1/admin/products/1", `{"description":"a\u0000b"}`, http.StatusBadRequest, "description must not contain NUL characters", ""},
+		{"total quantity", adminID, "/api/v1/admin/products/1", `{"total_quantity":10}`, http.StatusBadRequest, "total_quantity can't be changed here; use stock adjustments", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rec, _ := patchProduct(t, inventory.NewProductService(stubRepository{}), &tt.id, tt.path, tt.body)
+
+			if rec.Code != tt.wantStatus {
+				t.Errorf("status = %d, want %d; body %s", rec.Code, tt.wantStatus, rec.Body)
+			}
+			if tt.wantError == "" {
+				if !strings.Contains(rec.Body.String(), tt.wantInBody) {
+					t.Errorf("body = %s, want it to contain %s", rec.Body, tt.wantInBody)
+				}
+				return
+			}
+			if got := errorBody(t, rec); got != tt.wantError {
+				t.Errorf("error = %q, want %q", got, tt.wantError)
 			}
 		})
 	}
