@@ -2,6 +2,7 @@ package v1
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -35,10 +36,21 @@ type fakeProducts struct {
 	product inventory.Product
 	err     error
 
+	// page is what ListProducts returns.
+	page inventory.ProductPage
+
 	called     bool
 	gotActor   inventory.Actor
 	gotProduct inventory.NewProduct
 	gotID      int64
+	gotFilter  inventory.ProductFilter
+}
+
+func (f *fakeProducts) ListProducts(ctx context.Context, actor inventory.Actor, filter inventory.ProductFilter) (inventory.ProductPage, error) {
+	f.called = true
+	f.gotActor = actor
+	f.gotFilter = filter
+	return f.page, f.err
 }
 
 func (f *fakeProducts) GetProduct(ctx context.Context, actor inventory.Actor, id int64) (inventory.Product, error) {
@@ -314,6 +326,23 @@ func (stubRepository) GetProduct(ctx context.Context, id int64) (inventory.Produ
 	return inventory.Product{}, fmt.Errorf("select product: %w", inventory.ErrNotFound)
 }
 
+// ListProducts lists the products GetProduct serves, in (name, id) order,
+// the way the store does.
+func (r stubRepository) ListProducts(ctx context.Context, f inventory.ProductFilter) ([]inventory.Product, error) {
+	var out []inventory.Product
+	for _, id := range []int64{2, 1} { // "Old pallet jack" < "Pallet jack"
+		p, _ := r.GetProduct(ctx, id)
+		if !p.Active && !f.IncludeInactive {
+			continue
+		}
+		if f.After != nil && (p.Name < f.After.Name || p.Name == f.After.Name && p.ID <= f.After.ID) {
+			continue
+		}
+		out = append(out, p)
+	}
+	return out[:min(f.Limit, len(out))], nil
+}
+
 // TestCreateProductWithService runs the handler against the real
 // inventory.ProductService, so the order of the checks and the validation
 // messages are those clients actually see.
@@ -368,6 +397,7 @@ func TestRoutesResolveDevUser(t *testing.T) {
 		name, method, path, body string
 	}{
 		{"get product", http.MethodGet, "/api/v1/products/42", ""},
+		{"list products", http.MethodGet, "/api/v1/products", ""},
 		{"create product", http.MethodPost, "/api/v1/admin/products", `{"sku":"123456","name":"Pallet jack"}`},
 	}
 	for _, tt := range tests {
@@ -406,10 +436,10 @@ func TestRoutesResolveDevUser(t *testing.T) {
 	})
 }
 
-// getProduct sends GET path through a mux with the v1 routes registered.
+// sendGet sends GET path through a mux with the v1 routes registered.
 // id, if not nil, is put in the request context the way identity.DevHeader
 // does. It returns the response and the request's telemetry event.
-func getProduct(t *testing.T, products ProductService, id *identity.Identity, path string) (*httptest.ResponseRecorder, *telemetry.Event) {
+func sendGet(t *testing.T, products ProductService, id *identity.Identity, path string) (*httptest.ResponseRecorder, *telemetry.Event) {
 	t.Helper()
 	mux := http.NewServeMux()
 	Register(mux, products, fakeUsers{})
@@ -431,7 +461,7 @@ func TestGetProductFound(t *testing.T) {
 		TotalQuantity: 140, Active: true, CreatedAt: created, UpdatedAt: created,
 	}}
 
-	rec, event := getProduct(t, products, &requesterID, "/api/v1/products/42")
+	rec, event := sendGet(t, products, &requesterID, "/api/v1/products/42")
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d; body %s", rec.Code, http.StatusOK, rec.Body)
@@ -507,7 +537,7 @@ func TestGetProductErrors(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			products := &fakeProducts{err: tt.err}
 
-			rec, event := getProduct(t, products, tt.id, tt.path)
+			rec, event := sendGet(t, products, tt.id, tt.path)
 
 			if rec.Code != tt.wantStatus {
 				t.Errorf("status = %d, want %d", rec.Code, tt.wantStatus)
@@ -544,7 +574,7 @@ func TestGetProductErrors(t *testing.T) {
 func TestGetProductAnonymous(t *testing.T) {
 	products := &fakeProducts{product: inventory.Product{ID: 42, SKU: "000123", Name: "Pallet jack", Active: true}}
 
-	rec, event := getProduct(t, products, nil, "/api/v1/products/42")
+	rec, event := sendGet(t, products, nil, "/api/v1/products/42")
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d; body %s", rec.Code, http.StatusOK, rec.Body)
@@ -566,7 +596,7 @@ func TestGetProductAnonymous(t *testing.T) {
 func TestGetProductLeadingZeros(t *testing.T) {
 	products := &fakeProducts{product: inventory.Product{ID: 7, SKU: "123456", Active: true}}
 
-	rec, event := getProduct(t, products, &requesterID, "/api/v1/products/007")
+	rec, event := sendGet(t, products, &requesterID, "/api/v1/products/007")
 
 	if rec.Code != http.StatusOK {
 		t.Errorf("status = %d, want %d", rec.Code, http.StatusOK)
@@ -582,7 +612,7 @@ func TestGetProductLeadingZeros(t *testing.T) {
 func TestGetProductLargestID(t *testing.T) {
 	products := &fakeProducts{product: inventory.Product{ID: 9223372036854775807, SKU: "123456", Active: true}}
 
-	rec, _ := getProduct(t, products, &requesterID, "/api/v1/products/9223372036854775807")
+	rec, _ := sendGet(t, products, &requesterID, "/api/v1/products/9223372036854775807")
 
 	if rec.Code != http.StatusOK {
 		t.Errorf("status = %d, want %d", rec.Code, http.StatusOK)
@@ -593,7 +623,7 @@ func TestGetProductLargestID(t *testing.T) {
 }
 
 func TestGetProductDoesNotLeakInternalErrors(t *testing.T) {
-	rec, event := getProduct(t, &fakeProducts{err: errors.New("db down: connection refused")}, &requesterID, "/api/v1/products/42")
+	rec, event := sendGet(t, &fakeProducts{err: errors.New("db down: connection refused")}, &requesterID, "/api/v1/products/42")
 
 	if strings.Contains(rec.Body.String(), "db down") {
 		t.Errorf("response body leaks internal error: %s", rec.Body.String())
@@ -626,7 +656,7 @@ func TestGetProductWithService(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			rec, event := getProduct(t, inventory.NewProductService(stubRepository{}), tt.id, tt.path)
+			rec, event := sendGet(t, inventory.NewProductService(stubRepository{}), tt.id, tt.path)
 
 			if _, ok := eventAttrs(t, event)["product.hidden"]; ok != tt.wantHidden {
 				t.Errorf("event has product.hidden = %v, want %v", ok, tt.wantHidden)
@@ -639,6 +669,310 @@ func TestGetProductWithService(t *testing.T) {
 				if got := errorBody(t, rec); got != "product not found" {
 					t.Errorf("error = %q, want %q", got, "product not found")
 				}
+			}
+		})
+	}
+}
+
+func TestListProductsListed(t *testing.T) {
+	created := time.Date(2026, 10, 21, 21, 14, 50, 123456000, time.FixedZone("EDT", -4*60*60))
+	jack := inventory.Product{
+		ID: 42, SKU: "000123", Name: "Pallet jack", Description: "Manual, 2500 kg", Category: "Handling",
+		TotalQuantity: 140, Active: true, CreatedAt: created, UpdatedAt: created,
+	}
+	wrap := inventory.Product{ID: 7, SKU: "123456", Name: "Shrink wrap", Active: true, CreatedAt: created, UpdatedAt: created}
+	jackJSON := `{"id":42,"sku":"000123","name":"Pallet jack","description":"Manual, 2500 kg","category":"Handling",` +
+		`"total_quantity":140,"active":true,` +
+		`"created_at":"2026-10-22T01:14:50.123456Z","updated_at":"2026-10-22T01:14:50.123456Z"}`
+	wrapJSON := `{"id":7,"sku":"123456","name":"Shrink wrap","description":"","category":null,` +
+		`"total_quantity":0,"active":true,` +
+		`"created_at":"2026-10-22T01:14:50.123456Z","updated_at":"2026-10-22T01:14:50.123456Z"}`
+	afterJack := inventory.ProductCursor{Name: "Pallet jack", ID: 42}
+
+	tests := []struct {
+		name       string
+		id         *identity.Identity
+		query      string
+		page       inventory.ProductPage
+		wantActor  inventory.Actor
+		wantFilter inventory.ProductFilter
+		wantJSON   string
+		// wantAttrs are the event attributes besides user.id and
+		// product.outcome.
+		wantAttrs map[string]slog.Value
+	}{
+		{
+			name:       "no parameters, anonymous",
+			page:       inventory.ProductPage{Products: []inventory.Product{jack, wrap}},
+			wantFilter: inventory.ProductFilter{Limit: 50},
+			wantJSON:   `{"items":[` + jackJSON + `,` + wrapJSON + `],"next_cursor":null}`,
+			wantAttrs: map[string]slog.Value{
+				"product.limit": slog.IntValue(50), "product.include_inactive": slog.BoolValue(false),
+				"product.has_cursor": slog.BoolValue(false), "product.count": slog.IntValue(2), "product.has_more": slog.BoolValue(false),
+			},
+		},
+		{
+			name:       "empty page",
+			id:         &requesterID,
+			wantActor:  inventory.Actor{UserID: 2},
+			wantFilter: inventory.ProductFilter{Limit: 50},
+			wantJSON:   `{"items":[],"next_cursor":null}`,
+			wantAttrs: map[string]slog.Value{
+				"product.limit": slog.IntValue(50), "product.include_inactive": slog.BoolValue(false),
+				"product.has_cursor": slog.BoolValue(false), "product.count": slog.IntValue(0), "product.has_more": slog.BoolValue(false),
+			},
+		},
+		{
+			name:       "next page",
+			id:         &requesterID,
+			query:      "limit=1",
+			page:       inventory.ProductPage{Products: []inventory.Product{jack}, Next: &afterJack},
+			wantActor:  inventory.Actor{UserID: 2},
+			wantFilter: inventory.ProductFilter{Limit: 1},
+			wantJSON:   `{"items":[` + jackJSON + `],"next_cursor":"` + encodeCursor(afterJack) + `"}`,
+			wantAttrs: map[string]slog.Value{
+				"product.limit": slog.IntValue(1), "product.include_inactive": slog.BoolValue(false),
+				"product.has_cursor": slog.BoolValue(false), "product.count": slog.IntValue(1), "product.has_more": slog.BoolValue(true),
+			},
+		},
+		{
+			name:       "every parameter",
+			id:         &adminID,
+			query:      "q=+Jack+&category=%20Handling&limit=100&include_inactive=true&cursor=" + encodeCursor(afterJack),
+			page:       inventory.ProductPage{Products: []inventory.Product{wrap}},
+			wantActor:  inventory.Actor{UserID: 1, Admin: true},
+			wantFilter: inventory.ProductFilter{Query: " Jack ", Category: " Handling", IncludeInactive: true, Limit: 100, After: &afterJack},
+			wantJSON:   `{"items":[` + wrapJSON + `],"next_cursor":null}`,
+			wantAttrs: map[string]slog.Value{
+				"product.limit": slog.IntValue(100), "product.include_inactive": slog.BoolValue(true),
+				"product.has_cursor": slog.BoolValue(true), "product.query_length": slog.IntValue(4),
+				"product.category": slog.StringValue("Handling"),
+				"product.count":    slog.IntValue(1), "product.has_more": slog.BoolValue(false),
+			},
+		},
+		{
+			name:       "include_inactive=false, blank q and category",
+			id:         &requesterID,
+			query:      "include_inactive=false&q=%20&category=",
+			wantActor:  inventory.Actor{UserID: 2},
+			wantFilter: inventory.ProductFilter{Query: " ", Limit: 50},
+			wantJSON:   `{"items":[],"next_cursor":null}`,
+			wantAttrs: map[string]slog.Value{
+				"product.limit": slog.IntValue(50), "product.include_inactive": slog.BoolValue(false),
+				"product.has_cursor": slog.BoolValue(false), "product.count": slog.IntValue(0), "product.has_more": slog.BoolValue(false),
+			},
+		},
+		{
+			name:       "unknown parameters are ignored",
+			query:      "sort=sku&page=2",
+			wantFilter: inventory.ProductFilter{Limit: 50},
+			wantJSON:   `{"items":[],"next_cursor":null}`,
+			wantAttrs: map[string]slog.Value{
+				"product.limit": slog.IntValue(50), "product.include_inactive": slog.BoolValue(false),
+				"product.has_cursor": slog.BoolValue(false), "product.count": slog.IntValue(0), "product.has_more": slog.BoolValue(false),
+			},
+		},
+		{
+			name:       "query length counts characters",
+			query:      "q=%C3%A9t%C3%A9",
+			wantFilter: inventory.ProductFilter{Query: "été", Limit: 50},
+			wantJSON:   `{"items":[],"next_cursor":null}`,
+			wantAttrs: map[string]slog.Value{
+				"product.limit": slog.IntValue(50), "product.include_inactive": slog.BoolValue(false),
+				"product.has_cursor": slog.BoolValue(false), "product.query_length": slog.IntValue(3),
+				"product.count": slog.IntValue(0), "product.has_more": slog.BoolValue(false),
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			products := &fakeProducts{page: tt.page}
+
+			rec, event := sendGet(t, products, tt.id, "/api/v1/products?"+tt.query)
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want %d; body %s", rec.Code, http.StatusOK, rec.Body)
+			}
+			if got := rec.Header().Get("Content-Type"); got != "application/json" {
+				t.Errorf("Content-Type = %q, want application/json", got)
+			}
+			if got := strings.TrimSpace(rec.Body.String()); got != tt.wantJSON {
+				t.Errorf("body =\n%s\nwant\n%s", got, tt.wantJSON)
+			}
+			if products.gotActor != tt.wantActor {
+				t.Errorf("service called with actor %+v, want %+v", products.gotActor, tt.wantActor)
+			}
+			if !reflect.DeepEqual(products.gotFilter, tt.wantFilter) {
+				t.Errorf("service called with %+v, want %+v", products.gotFilter, tt.wantFilter)
+			}
+
+			attrs := eventAttrs(t, event)
+			want := map[string]slog.Value{"product.outcome": slog.StringValue("listed")}
+			if tt.id != nil {
+				want["user.id"] = slog.Int64Value(tt.id.UserID)
+			}
+			for k, v := range tt.wantAttrs {
+				want[k] = v
+			}
+			if len(attrs) != len(want) {
+				t.Errorf("event attrs = %v, want %v", attrs, want)
+			}
+			for k, v := range want {
+				if !attrs[k].Equal(v) {
+					t.Errorf("event %s = %v, want %v", k, attrs[k], v)
+				}
+			}
+		})
+	}
+}
+
+func TestListProductsErrors(t *testing.T) {
+	tests := []struct {
+		name        string
+		id          *identity.Identity
+		query       string
+		err         error
+		wantStatus  int
+		wantError   string
+		wantOutcome string
+		// wantCalled is set when the parameters parsed, so the service was
+		// called.
+		wantCalled bool
+	}{
+		{"limit not a number", &requesterID, "limit=ten", nil, http.StatusBadRequest, "invalid limit", "invalid", false},
+		{"limit empty", &requesterID, "limit=", nil, http.StatusBadRequest, "invalid limit", "invalid", false},
+		{"limit fraction", &requesterID, "limit=1.5", nil, http.StatusBadRequest, "invalid limit", "invalid", false},
+		{"limit overflows", &requesterID, "limit=99999999999999999999", nil, http.StatusBadRequest, "invalid limit", "invalid", false},
+		{"limit with space", &requesterID, "limit=%2010", nil, http.StatusBadRequest, "invalid limit", "invalid", false},
+		{"include_inactive yes", &adminID, "include_inactive=yes", nil, http.StatusBadRequest, "invalid include_inactive", "invalid", false},
+		{"include_inactive 1", &adminID, "include_inactive=1", nil, http.StatusBadRequest, "invalid include_inactive", "invalid", false},
+		{"include_inactive TRUE", &adminID, "include_inactive=TRUE", nil, http.StatusBadRequest, "invalid include_inactive", "invalid", false},
+		{"include_inactive empty", &adminID, "include_inactive", nil, http.StatusBadRequest, "invalid include_inactive", "invalid", false},
+		{"cursor empty", &requesterID, "cursor=", nil, http.StatusBadRequest, "invalid cursor", "invalid", false},
+		{"cursor not base64", &requesterID, "cursor=!!!", nil, http.StatusBadRequest, "invalid cursor", "invalid", false},
+		{"cursor malformed", &requesterID, "cursor=" + base64.RawURLEncoding.EncodeToString([]byte("Pallet jack")), nil, http.StatusBadRequest, "invalid cursor", "invalid", false},
+		{"bad escape", &requesterID, "q=%zz", nil, http.StatusBadRequest, "invalid query string", "invalid", false},
+		{"semicolon", &requesterID, "q=a;b", nil, http.StatusBadRequest, "invalid query string", "invalid", false},
+		{"anonymous, bad limit", nil, "limit=x", nil, http.StatusBadRequest, "invalid limit", "invalid", false},
+		{"validation error", &requesterID, "limit=0", &inventory.ValidationError{Field: "limit", Reason: "must be between 1 and 100"}, http.StatusBadRequest, "limit must be between 1 and 100", "invalid", true},
+		{"forbidden", &requesterID, "include_inactive=true", inventory.ErrForbidden, http.StatusForbidden, "admin role required", "forbidden", true},
+		{"anonymous, forbidden", nil, "include_inactive=true", inventory.ErrForbidden, http.StatusForbidden, "admin role required", "forbidden", true},
+		{"store failure", &requesterID, "", errors.New("db down: connection refused"), http.StatusInternalServerError, "internal error", "error", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			products := &fakeProducts{err: tt.err}
+
+			rec, event := sendGet(t, products, tt.id, "/api/v1/products?"+tt.query)
+
+			if rec.Code != tt.wantStatus {
+				t.Errorf("status = %d, want %d", rec.Code, tt.wantStatus)
+			}
+			if got := errorBody(t, rec); got != tt.wantError {
+				t.Errorf("error = %q, want %q", got, tt.wantError)
+			}
+			if products.called != tt.wantCalled {
+				t.Errorf("service called = %v, want %v", products.called, tt.wantCalled)
+			}
+
+			attrs := eventAttrs(t, event)
+			if got := attrs["product.outcome"].String(); got != tt.wantOutcome {
+				t.Errorf("event product.outcome = %q, want %q", got, tt.wantOutcome)
+			}
+			for _, k := range []string{"product.count", "product.has_more", "product.category"} {
+				if _, ok := attrs[k]; ok {
+					t.Errorf("event has %s for a failed request", k)
+				}
+			}
+			if _, ok := attrs["product.limit"]; ok != tt.wantCalled {
+				t.Errorf("event has product.limit = %v, want %v", ok, tt.wantCalled)
+			}
+			if _, ok := attrs["error.message"]; ok != (tt.wantStatus == http.StatusInternalServerError) {
+				t.Errorf("event has error.message = %v, want it only on a 500", ok)
+			}
+			if got, ok := attrs["user.id"]; ok != (tt.id != nil) || (ok && got.Int64() != tt.id.UserID) {
+				t.Errorf("event user.id = %v (present %v), want the caller's id", got, ok)
+			}
+		})
+	}
+}
+
+func TestListProductsDoesNotLeakInternalErrors(t *testing.T) {
+	rec, event := sendGet(t, &fakeProducts{err: errors.New("db down: connection refused")}, &requesterID, "/api/v1/products")
+
+	if strings.Contains(rec.Body.String(), "db down") {
+		t.Errorf("response body leaks internal error: %s", rec.Body.String())
+	}
+	if got := eventAttrs(t, event)["error.message"].String(); !strings.Contains(got, "db down") {
+		t.Errorf("event error.message = %q, want the internal error", got)
+	}
+}
+
+// TestListProductsWithService runs the handler against the real
+// inventory.ProductService, so the role check, the filter rules and the
+// paging are those clients actually see.
+func TestListProductsWithService(t *testing.T) {
+	tests := []struct {
+		name       string
+		id         *identity.Identity
+		query      string
+		wantStatus int
+		// wantIDs are the ids listed on a 200; wantError the error otherwise.
+		wantIDs   []int64
+		wantError string
+		wantNext  bool
+	}{
+		{"anonymous", nil, "", http.StatusOK, []int64{1}, "", false},
+		{"requester", &requesterID, "", http.StatusOK, []int64{1}, "", false},
+		{"admin, active only", &adminID, "", http.StatusOK, []int64{1}, "", false},
+		{"admin, with inactive", &adminID, "include_inactive=true", http.StatusOK, []int64{2, 1}, "", false},
+		{"admin, first page", &adminID, "include_inactive=true&limit=1", http.StatusOK, []int64{2}, "", true},
+		{"admin, second page", &adminID, "include_inactive=true&limit=1&cursor=" + encodeCursor(inventory.ProductCursor{Name: "Old pallet jack", ID: 2}), http.StatusOK, []int64{1}, "", false},
+		{"requester, with inactive", &requesterID, "include_inactive=true", http.StatusForbidden, nil, "admin role required", false},
+		{"anonymous, with inactive", nil, "include_inactive=true", http.StatusForbidden, nil, "admin role required", false},
+		// The role is checked before the filter rules...
+		{"requester, with inactive and bad limit", &requesterID, "include_inactive=true&limit=0", http.StatusForbidden, nil, "admin role required", false},
+		// ...but after the parameters are parsed.
+		{"requester, with inactive and malformed limit", &requesterID, "include_inactive=true&limit=x", http.StatusBadRequest, nil, "invalid limit", false},
+		{"limit 0", &requesterID, "limit=0", http.StatusBadRequest, nil, "limit must be between 1 and 100", false},
+		{"negative limit", &requesterID, "limit=-1", http.StatusBadRequest, nil, "limit must be between 1 and 100", false},
+		{"limit 101", &requesterID, "limit=101", http.StatusBadRequest, nil, "limit must be between 1 and 100", false},
+		{"long query", &requesterID, "q=" + strings.Repeat("a", 201), http.StatusBadRequest, nil, "q must be at most 200 characters", false},
+		{"NUL in query", &requesterID, "q=a%00b", http.StatusBadRequest, nil, "q must not contain NUL characters", false},
+		{"long category", &requesterID, "category=" + strings.Repeat("a", 101), http.StatusBadRequest, nil, "category must be at most 100 characters", false},
+		{"NUL in category", nil, "category=%00", http.StatusBadRequest, nil, "category must not contain NUL characters", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rec, _ := sendGet(t, inventory.NewProductService(stubRepository{}), tt.id, "/api/v1/products?"+tt.query)
+
+			if rec.Code != tt.wantStatus {
+				t.Fatalf("status = %d, want %d; body %s", rec.Code, tt.wantStatus, rec.Body)
+			}
+			if tt.wantStatus != http.StatusOK {
+				if got := errorBody(t, rec); got != tt.wantError {
+					t.Errorf("error = %q, want %q", got, tt.wantError)
+				}
+				return
+			}
+			var body struct {
+				Items []struct {
+					ID int64 `json:"id"`
+				} `json:"items"`
+				NextCursor *string `json:"next_cursor"`
+			}
+			if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+				t.Fatalf("decode body: %v", err)
+			}
+			var ids []int64
+			for _, it := range body.Items {
+				ids = append(ids, it.ID)
+			}
+			if !reflect.DeepEqual(ids, tt.wantIDs) {
+				t.Errorf("listed ids = %v, want %v", ids, tt.wantIDs)
+			}
+			if (body.NextCursor != nil) != tt.wantNext {
+				t.Errorf("next_cursor = %v, want present %v", body.NextCursor, tt.wantNext)
 			}
 		})
 	}

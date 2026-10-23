@@ -39,6 +39,44 @@ type NewProduct struct {
 	TotalQuantity int
 }
 
+// ProductFilter selects one page of products for ListProducts.
+type ProductFilter struct {
+	// Query matches products whose name contains it, ignoring case. It is
+	// trimmed; "" matches every name.
+	Query string
+	// Category matches products in exactly this category. It is trimmed;
+	// "" matches every product, including uncategorized ones.
+	Category string
+	// IncludeInactive also lists inactive products. Only admins may set it.
+	IncludeInactive bool
+	// Limit is the most products to return, from 1 to MaxProductLimit.
+	// Callers with no limit of their own use DefaultProductLimit.
+	Limit int
+	// After, if not nil, is a previous page's Next: the page starts after
+	// that product.
+	After *ProductCursor
+}
+
+// ProductCursor is a position in ListProducts' (name, id) order: the last
+// product of a page.
+type ProductCursor struct {
+	Name string
+	ID   int64
+}
+
+// ProductPage is one page of ListProducts.
+type ProductPage struct {
+	Products []Product
+	// Next is where the next page starts, or nil on the last page.
+	Next *ProductCursor
+}
+
+// Page sizes for ListProducts.
+const (
+	DefaultProductLimit = 50
+	MaxProductLimit     = 100
+)
+
 // Limits on product fields, in characters (runes).
 const (
 	maxNameLen        = 200
@@ -64,9 +102,10 @@ var (
 	ErrHidden = fmt.Errorf("%w: inactive", ErrNotFound)
 )
 
-// ValidationError reports a product field that breaks a rule. Its message
-// is safe to show to clients, e.g. "name is required". Field uses the
-// products column names.
+// ValidationError reports a product field or list filter that breaks a
+// rule. Its message is safe to show to clients, e.g. "name is required".
+// Field uses the products column names, or for a ProductFilter the query
+// parameter names ("q", "category", "limit").
 type ValidationError struct {
 	Field  string
 	Reason string
@@ -95,6 +134,10 @@ type ProductRepository interface {
 	// GetProduct returns the product with this id, active or not, or an
 	// error wrapping ErrNotFound if there is none.
 	GetProduct(ctx context.Context, id int64) (Product, error)
+	// ListProducts returns up to f.Limit products matching f, ordered by
+	// name and then id, starting after f.After. f is already normalized:
+	// Query and Category are trimmed, and "" means no filter.
+	ListProducts(ctx context.Context, f ProductFilter) ([]Product, error)
 }
 
 // ProductService holds the product catalog's business logic.
@@ -136,6 +179,36 @@ func (s *ProductService) GetProduct(ctx context.Context, actor Actor, id int64) 
 	return p, nil
 }
 
+// ListProducts returns one page of the catalog, ordered by name and then
+// id. Anyone may call it, including an anonymous (zero) actor, but only
+// admins may set f.IncludeInactive: anyone else gets ErrForbidden, checked
+// before f is validated. The page's Next is nil on the last page.
+func (s *ProductService) ListProducts(ctx context.Context, actor Actor, f ProductFilter) (ProductPage, error) {
+	if f.IncludeInactive && !actor.Admin {
+		return ProductPage{}, ErrForbidden
+	}
+	f, err := f.normalize()
+	if err != nil {
+		return ProductPage{}, err
+	}
+	// One extra row tells whether there is a next page.
+	limit := f.Limit
+	f.Limit++
+	products, err := s.repo.ListProducts(ctx, f)
+	if err != nil {
+		return ProductPage{}, err
+	}
+	if len(products) <= limit {
+		return ProductPage{Products: products}, nil
+	}
+	products = products[:limit]
+	last := products[limit-1]
+	return ProductPage{
+		Products: products,
+		Next:     &ProductCursor{Name: last.Name, ID: last.ID},
+	}, nil
+}
+
 // normalize trims p's name and category and checks every field except the
 // SKU, which ParseSKU has already checked.
 func (p NewProduct) normalize() (NewProduct, error) {
@@ -167,4 +240,32 @@ func (p NewProduct) normalize() (NewProduct, error) {
 		}
 	}
 	return p, nil
+}
+
+// normalize trims f's query and category and checks them and the limit. A
+// query longer than the longest allowed name could never match, so it has
+// the same cap.
+func (f ProductFilter) normalize() (ProductFilter, error) {
+	f.Query = strings.TrimSpace(f.Query)
+	f.Category = strings.TrimSpace(f.Category)
+
+	if f.Limit < 1 || f.Limit > MaxProductLimit {
+		return ProductFilter{}, &ValidationError{"limit", fmt.Sprintf("must be between 1 and %d", MaxProductLimit)}
+	}
+	for _, p := range []struct {
+		name   string
+		value  string
+		maxLen int
+	}{
+		{"q", f.Query, maxNameLen},
+		{"category", f.Category, maxCategoryLen},
+	} {
+		if utf8.RuneCountInString(p.value) > p.maxLen {
+			return ProductFilter{}, &ValidationError{p.name, fmt.Sprintf("must be at most %d characters", p.maxLen)}
+		}
+		if strings.ContainsRune(p.value, 0) {
+			return ProductFilter{}, &ValidationError{p.name, "must not contain NUL characters"}
+		}
+	}
+	return f, nil
 }
