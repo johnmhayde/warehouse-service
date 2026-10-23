@@ -178,5 +178,43 @@ func (s *Products) UpdateProduct(ctx context.Context, id int64, u inventory.Prod
 	return p, nil
 }
 
+// SetProductActive sets products.active for id. It locks the row and
+// writes only if the flag changes, so the set_updated_at trigger doesn't
+// move updated_at on a no-op.
+func (s *Products) SetProductActive(ctx context.Context, id int64, active bool) (inventory.Product, bool, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return inventory.Product{}, false, fmt.Errorf("begin: %w", err)
+	}
+	// Rollback after a successful Commit is a no-op.
+	defer tx.Rollback(ctx)
+
+	p, err := scanProduct(tx.QueryRow(ctx,
+		`SELECT `+productColumns+` FROM products WHERE id = $1 FOR UPDATE`,
+		id,
+	))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return inventory.Product{}, false, inventory.ErrNotFound
+	}
+	if err != nil {
+		return inventory.Product{}, false, fmt.Errorf("select product: %w", err)
+	}
+	if p.Active == active {
+		return p, false, nil
+	}
+
+	p, err = scanProduct(tx.QueryRow(ctx,
+		`UPDATE products SET active = $2 WHERE id = $1 RETURNING `+productColumns,
+		id, active,
+	))
+	if err != nil {
+		return inventory.Product{}, false, fmt.Errorf("update product: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return inventory.Product{}, false, fmt.Errorf("commit: %w", err)
+	}
+	return p, true, nil
+}
+
 // uniqueViolation is the Postgres SQLSTATE for unique_violation.
 const uniqueViolation = "23505"

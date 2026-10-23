@@ -173,6 +173,11 @@ type ProductRepository interface {
 	// updated product, or an error wrapping ErrNotFound if there is none.
 	// It never changes TotalQuantity.
 	UpdateProduct(ctx context.Context, id int64, u ProductUpdate) (Product, error)
+	// SetProductActive sets the active flag of the product with this id
+	// and returns the product, or an error wrapping ErrNotFound if there is
+	// none. changed is false when the product already had this flag; it is
+	// then not written, so its updated_at stays as it was.
+	SetProductActive(ctx context.Context, id int64, active bool) (p Product, changed bool, err error)
 }
 
 // ProductService holds the product catalog's business logic.
@@ -258,6 +263,22 @@ func (s *ProductService) UpdateProduct(ctx context.Context, actor Actor, id int6
 		return Product{}, err
 	}
 	return s.repo.UpdateProduct(ctx, id, u)
+}
+
+// SetProductActive disables (active false) or re-enables (active true) the
+// product with this id and returns it. Only admins may call it; the role is
+// checked first. Products are never deleted: disabling only clears the
+// flag, so the product's stock adjustments and other history stay as they
+// are, and admins can still read it. Setting the flag a product already has
+// succeeds with changed false.
+//
+// Reservations (EP04) must refuse inactive products on new and edited
+// requests; existing reservations keep them.
+func (s *ProductService) SetProductActive(ctx context.Context, actor Actor, id int64, active bool) (p Product, changed bool, err error) {
+	if !actor.Admin {
+		return Product{}, false, ErrForbidden
+	}
+	return s.repo.SetProductActive(ctx, id, active)
 }
 
 // normalize trims p's name and category and checks every field except the

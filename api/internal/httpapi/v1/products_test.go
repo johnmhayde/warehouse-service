@@ -38,6 +38,8 @@ type fakeProducts struct {
 
 	// page is what ListProducts returns.
 	page inventory.ProductPage
+	// changed is what SetProductActive returns.
+	changed bool
 
 	called     bool
 	gotActor   inventory.Actor
@@ -45,6 +47,7 @@ type fakeProducts struct {
 	gotID      int64
 	gotFilter  inventory.ProductFilter
 	gotUpdate  inventory.ProductUpdate
+	gotActive  bool
 }
 
 func (f *fakeProducts) ListProducts(ctx context.Context, actor inventory.Actor, filter inventory.ProductFilter) (inventory.ProductPage, error) {
@@ -74,6 +77,14 @@ func (f *fakeProducts) CreateProduct(ctx context.Context, actor inventory.Actor,
 	f.gotActor = actor
 	f.gotProduct = p
 	return f.product, f.err
+}
+
+func (f *fakeProducts) SetProductActive(ctx context.Context, actor inventory.Actor, id int64, active bool) (inventory.Product, bool, error) {
+	f.called = true
+	f.gotActor = actor
+	f.gotID = id
+	f.gotActive = active
+	return f.product, f.changed, f.err
 }
 
 var (
@@ -370,6 +381,18 @@ func (r stubRepository) UpdateProduct(ctx context.Context, id int64, u inventory
 	return p, nil
 }
 
+// SetProductActive sets the flag on the product GetProduct returns and
+// reports whether it changed.
+func (r stubRepository) SetProductActive(ctx context.Context, id int64, active bool) (inventory.Product, bool, error) {
+	p, err := r.GetProduct(ctx, id)
+	if err != nil {
+		return inventory.Product{}, false, err
+	}
+	changed := p.Active != active
+	p.Active = active
+	return p, changed, nil
+}
+
 // TestCreateProductWithService runs the handler against the real
 // inventory.ProductService, so the order of the checks and the validation
 // messages are those clients actually see.
@@ -427,6 +450,8 @@ func TestRoutesResolveDevUser(t *testing.T) {
 		{"list products", http.MethodGet, "/api/v1/products", ""},
 		{"create product", http.MethodPost, "/api/v1/admin/products", `{"sku":"123456","name":"Pallet jack"}`},
 		{"update product", http.MethodPatch, "/api/v1/admin/products/42", `{"name":"Pallet jack"}`},
+		{"disable product", http.MethodPost, "/api/v1/admin/products/42/disable", ""},
+		{"enable product", http.MethodPost, "/api/v1/admin/products/42/enable", ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name+" unknown user", func(t *testing.T) {
@@ -1313,6 +1338,233 @@ func TestUpdateProductWithService(t *testing.T) {
 			}
 			if got := errorBody(t, rec); got != tt.wantError {
 				t.Errorf("error = %q, want %q", got, tt.wantError)
+			}
+		})
+	}
+}
+
+// postProductAction sends an empty POST to path through a mux with the v1
+// routes registered. id, if not nil, is put in the request context the way
+// identity.DevHeader does. It returns the response and the request's
+// telemetry event.
+func postProductAction(t *testing.T, products ProductService, id *identity.Identity, path string) (*httptest.ResponseRecorder, *telemetry.Event) {
+	t.Helper()
+	mux := http.NewServeMux()
+	Register(mux, products, fakeUsers{})
+
+	req := httptest.NewRequest(http.MethodPost, path, nil)
+	ctx, event := telemetry.NewContext(req.Context())
+	if id != nil {
+		ctx = identity.With(ctx, *id)
+	}
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req.WithContext(ctx))
+	return rec, event
+}
+
+func TestSetProductActiveOK(t *testing.T) {
+	created := time.Date(2026, 10, 21, 21, 14, 50, 123456000, time.FixedZone("EDT", -4*60*60))
+	updated := created.Add(time.Hour)
+	tests := []struct {
+		name        string
+		path        string
+		changed     bool
+		wantActive  bool
+		wantOutcome string
+	}{
+		{"disable", "/api/v1/admin/products/42/disable", true, false, "disabled"},
+		{"disable, already disabled", "/api/v1/admin/products/42/disable", false, false, "unchanged"},
+		{"enable", "/api/v1/admin/products/42/enable", true, true, "enabled"},
+		{"enable, already enabled", "/api/v1/admin/products/42/enable", false, true, "unchanged"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			products := &fakeProducts{
+				product: inventory.Product{
+					ID: 42, SKU: "000123", Name: "Pallet jack", Description: "Manual, 2500 kg", Category: "Handling",
+					TotalQuantity: 140, Active: tt.wantActive, CreatedAt: created, UpdatedAt: updated,
+				},
+				changed: tt.changed,
+			}
+
+			rec, event := postProductAction(t, products, &adminID, tt.path)
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want %d; body %s", rec.Code, http.StatusOK, rec.Body)
+			}
+			if got := rec.Header().Get("Content-Type"); got != "application/json" {
+				t.Errorf("Content-Type = %q, want application/json", got)
+			}
+			wantJSON := fmt.Sprintf(`{"id":42,"sku":"000123","name":"Pallet jack","description":"Manual, 2500 kg","category":"Handling",`+
+				`"total_quantity":140,"active":%v,`+
+				`"created_at":"2026-10-22T01:14:50.123456Z","updated_at":"2026-10-22T02:14:50.123456Z"}`, tt.wantActive)
+			if got := strings.TrimSpace(rec.Body.String()); got != wantJSON {
+				t.Errorf("body =\n%s\nwant\n%s", got, wantJSON)
+			}
+			if products.gotID != 42 || products.gotActive != tt.wantActive {
+				t.Errorf("service called with id %d active %v, want 42 %v", products.gotID, products.gotActive, tt.wantActive)
+			}
+			if want := (inventory.Actor{UserID: 1, Admin: true}); products.gotActor != want {
+				t.Errorf("service called with actor %+v, want %+v", products.gotActor, want)
+			}
+
+			attrs := eventAttrs(t, event)
+			want := map[string]slog.Value{
+				"user.id":         slog.Int64Value(1),
+				"product.id":      slog.Int64Value(42),
+				"product.sku":     slog.StringValue("000123"),
+				"product.outcome": slog.StringValue(tt.wantOutcome),
+			}
+			if len(attrs) != len(want) {
+				t.Errorf("event attrs = %v, want %v", attrs, want)
+			}
+			for k, v := range want {
+				if !attrs[k].Equal(v) {
+					t.Errorf("event %s = %v, want %v", k, attrs[k], v)
+				}
+			}
+		})
+	}
+}
+
+// TestSetProductActiveIgnoresBody checks that a body, even one that isn't
+// JSON, doesn't change the result.
+func TestSetProductActiveIgnoresBody(t *testing.T) {
+	products := &fakeProducts{product: inventory.Product{ID: 42, SKU: "000123"}, changed: true}
+	mux := http.NewServeMux()
+	Register(mux, products, fakeUsers{})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/products/42/disable", strings.NewReader(`{"active":true} not json`))
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req.WithContext(identity.With(req.Context(), adminID)))
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d; body %s", rec.Code, http.StatusOK, rec.Body)
+	}
+	if !products.called || products.gotActive {
+		t.Errorf("service called = %v with active %v, want called with false", products.called, products.gotActive)
+	}
+}
+
+func TestSetProductActiveErrors(t *testing.T) {
+	tests := []struct {
+		name        string
+		id          *identity.Identity
+		path        string
+		err         error
+		wantStatus  int
+		wantError   string
+		wantOutcome string
+		// wantID is set when the id parsed, so the service was called and
+		// product.id is on the event.
+		wantID bool
+	}{
+		{"no identity", nil, "/api/v1/admin/products/42/disable", nil, http.StatusUnauthorized, "authentication required", "unauthenticated", false},
+		{"no identity, enable", nil, "/api/v1/admin/products/42/enable", nil, http.StatusUnauthorized, "authentication required", "unauthenticated", false},
+		// Identity is checked before the id.
+		{"no identity, invalid id", nil, "/api/v1/admin/products/abc/disable", nil, http.StatusUnauthorized, "authentication required", "unauthenticated", false},
+		{"not a number", &adminID, "/api/v1/admin/products/abc/disable", nil, http.StatusBadRequest, "invalid product id", "invalid", false},
+		{"zero", &adminID, "/api/v1/admin/products/0/enable", nil, http.StatusBadRequest, "invalid product id", "invalid", false},
+		{"negative", &adminID, "/api/v1/admin/products/-1/disable", nil, http.StatusBadRequest, "invalid product id", "invalid", false},
+		{"SKU instead of id", &adminID, "/api/v1/admin/products/SKU-00921/disable", nil, http.StatusBadRequest, "invalid product id", "invalid", false},
+		{"overflows bigint", &adminID, "/api/v1/admin/products/9223372036854775808/enable", nil, http.StatusBadRequest, "invalid product id", "invalid", false},
+		// The id is checked before the role.
+		{"requester, invalid id", &requesterID, "/api/v1/admin/products/abc/disable", nil, http.StatusBadRequest, "invalid product id", "invalid", false},
+		{"forbidden", &requesterID, "/api/v1/admin/products/42/disable", inventory.ErrForbidden, http.StatusForbidden, "admin role required", "forbidden", true},
+		{"forbidden, enable", &requesterID, "/api/v1/admin/products/42/enable", inventory.ErrForbidden, http.StatusForbidden, "admin role required", "forbidden", true},
+		{"not found", &adminID, "/api/v1/admin/products/42/disable", inventory.ErrNotFound, http.StatusNotFound, "product not found", "not_found", true},
+		{"wrapped not found", &adminID, "/api/v1/admin/products/42/enable", fmt.Errorf("select product: %w", inventory.ErrNotFound), http.StatusNotFound, "product not found", "not_found", true},
+		{"store failure", &adminID, "/api/v1/admin/products/42/disable", errors.New("db down: connection refused"), http.StatusInternalServerError, "internal error", "error", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			products := &fakeProducts{err: tt.err}
+
+			rec, event := postProductAction(t, products, tt.id, tt.path)
+
+			if rec.Code != tt.wantStatus {
+				t.Errorf("status = %d, want %d", rec.Code, tt.wantStatus)
+			}
+			if got := errorBody(t, rec); got != tt.wantError {
+				t.Errorf("error = %q, want %q", got, tt.wantError)
+			}
+			if products.called != tt.wantID {
+				t.Errorf("service called = %v, want %v", products.called, tt.wantID)
+			}
+
+			attrs := eventAttrs(t, event)
+			if got := attrs["product.outcome"].String(); got != tt.wantOutcome {
+				t.Errorf("event product.outcome = %q, want %q", got, tt.wantOutcome)
+			}
+			if got, ok := attrs["product.id"]; ok != tt.wantID || (ok && got.Int64() != 42) {
+				t.Errorf("event product.id = %v (present %v), want 42 present %v", got, ok, tt.wantID)
+			}
+			if _, ok := attrs["product.sku"]; ok {
+				t.Error("event has product.sku for a failed request")
+			}
+			if _, ok := attrs["error.message"]; ok != (tt.wantStatus == http.StatusInternalServerError) {
+				t.Errorf("event has error.message = %v, want it only on a 500", ok)
+			}
+			if got, ok := attrs["user.id"]; ok != (tt.id != nil) || (ok && got.Int64() != tt.id.UserID) {
+				t.Errorf("event user.id = %v (present %v), want the caller's id", got, ok)
+			}
+		})
+	}
+}
+
+func TestSetProductActiveDoesNotLeakInternalErrors(t *testing.T) {
+	rec, event := postProductAction(t, &fakeProducts{err: errors.New("db down: connection refused")}, &adminID, "/api/v1/admin/products/42/disable")
+
+	if strings.Contains(rec.Body.String(), "db down") {
+		t.Errorf("response body leaks internal error: %s", rec.Body.String())
+	}
+	if got := eventAttrs(t, event)["error.message"].String(); !strings.Contains(got, "db down") {
+		t.Errorf("event error.message = %q, want the internal error", got)
+	}
+}
+
+// TestSetProductActiveWithService runs the handler against the real
+// inventory.ProductService, so the role check and the outcomes are those
+// clients actually see.
+func TestSetProductActiveWithService(t *testing.T) {
+	tests := []struct {
+		name        string
+		id          identity.Identity
+		path        string
+		wantStatus  int
+		wantOutcome string
+		// wantActive is the active flag in a 200 response.
+		wantActive bool
+	}{
+		{"admin disables active", adminID, "/api/v1/admin/products/1/disable", http.StatusOK, "disabled", false},
+		{"admin disables inactive", adminID, "/api/v1/admin/products/2/disable", http.StatusOK, "unchanged", false},
+		{"admin enables inactive", adminID, "/api/v1/admin/products/2/enable", http.StatusOK, "enabled", true},
+		{"admin enables active", adminID, "/api/v1/admin/products/1/enable", http.StatusOK, "unchanged", true},
+		{"admin, unknown", adminID, "/api/v1/admin/products/3/disable", http.StatusNotFound, "not_found", false},
+		{"requester disables", requesterID, "/api/v1/admin/products/1/disable", http.StatusForbidden, "forbidden", false},
+		{"requester enables", requesterID, "/api/v1/admin/products/2/enable", http.StatusForbidden, "forbidden", false},
+		// The role is checked before the product is looked up, so a
+		// requester can't probe which ids exist.
+		{"requester, unknown", requesterID, "/api/v1/admin/products/3/disable", http.StatusForbidden, "forbidden", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rec, event := postProductAction(t, inventory.NewProductService(stubRepository{}), &tt.id, tt.path)
+
+			if rec.Code != tt.wantStatus {
+				t.Fatalf("status = %d, want %d; body %s", rec.Code, tt.wantStatus, rec.Body)
+			}
+			if got := eventAttrs(t, event)["product.outcome"].String(); got != tt.wantOutcome {
+				t.Errorf("event product.outcome = %q, want %q", got, tt.wantOutcome)
+			}
+			if tt.wantStatus != http.StatusOK {
+				return
+			}
+			var body productResponse
+			if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+				t.Fatalf("decode body: %v", err)
+			}
+			if body.Active != tt.wantActive {
+				t.Errorf("active = %v, want %v", body.Active, tt.wantActive)
 			}
 		})
 	}

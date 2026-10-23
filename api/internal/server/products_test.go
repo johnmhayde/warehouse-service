@@ -359,3 +359,111 @@ func TestListProductsEndToEnd(t *testing.T) {
 		})
 	}
 }
+
+// TestDisableProductEndToEnd disables and re-enables a product through the
+// server's full handler, wired the way cmd/api wires it, against a migrated
+// database. A disabled product keeps its stock history and is still served
+// to admins.
+func TestDisableProductEndToEnd(t *testing.T) {
+	pool := pgtest.Migrated(t)
+	ctx := context.Background()
+	for _, u := range []struct{ email, role string }{
+		{"admin@example.com", "admin"},
+		{"requester@example.com", "requester"},
+	} {
+		if _, err := pool.Exec(ctx,
+			"INSERT INTO users (email, display_name, role) VALUES ($1, $2, $3)",
+			u.email, "Test user", u.role,
+		); err != nil {
+			t.Fatalf("insert user %s: %v", u.email, err)
+		}
+	}
+
+	logger := slog.New(slog.DiscardHandler)
+	srv := New(config.Config{}, logger, health.New(logger),
+		inventory.NewProductService(postgres.NewProducts(pool)),
+		postgres.NewUsers(pool),
+	)
+	send := func(method, path, devUser, body string) *httptest.ResponseRecorder {
+		t.Helper()
+		req := httptest.NewRequest(method, path, strings.NewReader(body))
+		if devUser != "" {
+			req.Header.Set(identity.DevUserHeader, devUser)
+		}
+		rec := httptest.NewRecorder()
+		srv.http.Handler.ServeHTTP(rec, req)
+		return rec
+	}
+
+	rec := send(http.MethodPost, "/api/v1/admin/products", "admin@example.com", `{"sku":"123456","name":"Pallet jack","total_quantity":12}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create: status = %d, want %d; body %s", rec.Code, http.StatusCreated, rec.Body)
+	}
+	var id int64
+	if err := pool.QueryRow(ctx, "SELECT id FROM products WHERE sku = '123456'").Scan(&id); err != nil {
+		t.Fatalf("query product id: %v", err)
+	}
+	product := fmt.Sprintf("/api/v1/products/%d", id)
+	admin := fmt.Sprintf("/api/v1/admin/products/%d", id)
+
+	type step struct {
+		name       string
+		method     string
+		path       string
+		devUser    string
+		wantStatus int
+		// wantInBody must appear in the response body.
+		wantInBody string
+	}
+	// The steps share the database, so they run in order.
+	run := func(steps []step) {
+		t.Helper()
+		for _, st := range steps {
+			rec := send(st.method, st.path, st.devUser, "")
+
+			if rec.Code != st.wantStatus {
+				t.Errorf("%s: status = %d, want %d; body %s", st.name, rec.Code, st.wantStatus, rec.Body)
+			}
+			if !strings.Contains(rec.Body.String(), st.wantInBody) {
+				t.Errorf("%s: body %s, want it to contain %s", st.name, rec.Body, st.wantInBody)
+			}
+		}
+	}
+	// checkHistory checks that the initial stock adjustment is still the
+	// product's only one.
+	checkHistory := func(when string) {
+		t.Helper()
+		var (
+			count, delta int
+			reason       string
+		)
+		if err := pool.QueryRow(ctx,
+			"SELECT count(*) OVER (), delta, reason FROM stock_adjustments WHERE product_id = $1", id,
+		).Scan(&count, &delta, &reason); err != nil {
+			t.Fatalf("%s: query stock adjustments: %v", when, err)
+		}
+		if count != 1 || delta != 12 || reason != "Initial stock" {
+			t.Errorf("%s: stock adjustments = %d, first %d %q; want 1, 12 \"Initial stock\"", when, count, delta, reason)
+		}
+	}
+
+	run([]step{
+		{"requester can't disable", http.MethodPost, admin + "/disable", "requester@example.com", http.StatusForbidden, `{"error":"admin role required"}`},
+		{"no identity", http.MethodPost, admin + "/disable", "", http.StatusUnauthorized, `{"error":"authentication required"}`},
+		{"unknown id", http.MethodPost, fmt.Sprintf("/api/v1/admin/products/%d/disable", id+1000), "admin@example.com", http.StatusNotFound, `{"error":"product not found"}`},
+		{"admin disables", http.MethodPost, admin + "/disable", "admin@example.com", http.StatusOK, `"active":false`},
+		{"admin disables again", http.MethodPost, admin + "/disable", "admin@example.com", http.StatusOK, `"active":false`},
+		{"admin still sees it", http.MethodGet, product, "admin@example.com", http.StatusOK, `"total_quantity":12,"active":false`},
+		{"requester doesn't", http.MethodGet, product, "requester@example.com", http.StatusNotFound, `{"error":"product not found"}`},
+		{"anonymous doesn't", http.MethodGet, product, "", http.StatusNotFound, `{"error":"product not found"}`},
+	})
+	checkHistory("disabled")
+
+	run([]step{
+		{"requester can't enable", http.MethodPost, admin + "/enable", "requester@example.com", http.StatusForbidden, `{"error":"admin role required"}`},
+		{"admin enables", http.MethodPost, admin + "/enable", "admin@example.com", http.StatusOK, `"active":true`},
+		{"admin enables again", http.MethodPost, admin + "/enable", "admin@example.com", http.StatusOK, `"active":true`},
+		{"requester sees it again", http.MethodGet, product, "requester@example.com", http.StatusOK, `"total_quantity":12,"active":true`},
+	})
+	checkHistory("re-enabled")
+}

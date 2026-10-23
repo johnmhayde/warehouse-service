@@ -18,8 +18,8 @@ type fakeProducts struct {
 	gotActorID int64
 	got        NewProduct
 
-	// product is what GetProduct and UpdateProduct return; gotID is the id
-	// they were asked for.
+	// product is what GetProduct, UpdateProduct and SetProductActive
+	// return; gotID is the id they were asked for.
 	product Product
 	gotID   int64
 
@@ -29,6 +29,11 @@ type fakeProducts struct {
 	gotFilter ProductFilter
 
 	gotUpdate ProductUpdate
+
+	// changed is what SetProductActive returns; gotActive is the flag it
+	// was asked to set.
+	changed   bool
+	gotActive bool
 }
 
 func (f *fakeProducts) ListProducts(ctx context.Context, filter ProductFilter) ([]Product, error) {
@@ -67,6 +72,16 @@ func (f *fakeProducts) GetProduct(ctx context.Context, id int64) (Product, error
 		return Product{}, f.err
 	}
 	return f.product, nil
+}
+
+func (f *fakeProducts) SetProductActive(ctx context.Context, id int64, active bool) (Product, bool, error) {
+	f.called = true
+	f.gotID = id
+	f.gotActive = active
+	if f.err != nil {
+		return Product{}, false, f.err
+	}
+	return f.product, f.changed, nil
 }
 
 var (
@@ -649,6 +664,61 @@ func TestProductUpdateFields(t *testing.T) {
 	for _, tt := range tests {
 		if got := tt.in.Fields(); !reflect.DeepEqual(got, tt.want) {
 			t.Errorf("%s.Fields() = %v, want %v", formatUpdate(tt.in), got, tt.want)
+		}
+	}
+}
+
+func TestSetProductActive(t *testing.T) {
+	for _, active := range []bool{false, true} {
+		for _, changed := range []bool{false, true} {
+			t.Run(fmt.Sprintf("active %v changed %v", active, changed), func(t *testing.T) {
+				want := Product{ID: 7, SKU: "123456", Name: "Pallet jack", Active: active}
+				repo := &fakeProducts{product: want, changed: changed}
+
+				got, gotChanged, err := NewProductService(repo).SetProductActive(context.Background(), admin, 7, active)
+				if err != nil {
+					t.Fatalf("SetProductActive: %v", err)
+				}
+
+				if repo.gotID != 7 || repo.gotActive != active {
+					t.Errorf("repository asked for id %d active %v, want 7 %v", repo.gotID, repo.gotActive, active)
+				}
+				if !reflect.DeepEqual(got, want) || gotChanged != changed {
+					t.Errorf("SetProductActive = %+v, %v; want %+v, %v", got, gotChanged, want, changed)
+				}
+			})
+		}
+	}
+}
+
+func TestSetProductActiveForbidden(t *testing.T) {
+	// The zero Actor is anonymous and must never pass the admin check.
+	for _, actor := range []Actor{requester, {}} {
+		for _, active := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%+v active %v", actor, active), func(t *testing.T) {
+				repo := &fakeProducts{}
+
+				_, _, err := NewProductService(repo).SetProductActive(context.Background(), actor, 7, active)
+
+				if !errors.Is(err, ErrForbidden) {
+					t.Errorf("SetProductActive error = %v, want ErrForbidden", err)
+				}
+				if repo.called {
+					t.Error("repository called for a non-admin")
+				}
+			})
+		}
+	}
+}
+
+func TestSetProductActiveRepositoryError(t *testing.T) {
+	for _, want := range []error{ErrNotFound, errors.New("db down")} {
+		repo := &fakeProducts{err: errors.Join(errors.New("postgres: set product active"), want)}
+
+		_, _, err := NewProductService(repo).SetProductActive(context.Background(), admin, 1, false)
+
+		if !errors.Is(err, want) {
+			t.Errorf("SetProductActive error = %v, want %v", err, want)
 		}
 	}
 }

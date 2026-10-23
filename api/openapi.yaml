@@ -36,7 +36,7 @@ servers:
 security: []
 tags:
   - name: products
-    description: The product catalog. Creating and updating products is admin only.
+    description: The product catalog. Creating, updating, disabling and enabling products is admin only.
   - name: health
     description: Liveness and readiness probes for container runtimes and load balancers
 paths:
@@ -618,6 +618,105 @@ paths:
                 $ref: '#/components/schemas/Error'
               example:
                 error: internal error
+  /api/v1/admin/products/{id}/disable:
+    post:
+      operationId: disableProduct
+      summary: Disable a product
+      description: |
+        Retires a product from normal use by setting `active` to false.
+        Admins only. Products are never deleted: the product keeps its stock
+        adjustments and other history, admins can still read it, and
+        non-admins get `404` for it from `GET /api/v1/products/{id}`.
+        Disabling a product that is already disabled changes nothing (not
+        even `updated_at`) and returns it with 200, so the call is safe to
+        retry. Re-enable it with `POST /api/v1/admin/products/{id}/enable`.
+
+        No request body is needed; one that is sent is ignored.
+
+        Checks run in this order: the caller must be identified (401), the
+        id must be valid (400), the caller must be an admin (403), then the
+        product must exist (404). So a non-admin gets 403 for any valid id,
+        whether or not a product has it.
+      tags: [products]
+      security:
+        - devUser: []
+      parameters:
+        - $ref: '#/components/parameters/ProductID'
+      responses:
+        '200':
+          description: The product, now disabled.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Product'
+              example:
+                id: 42
+                sku: '000123'
+                name: Pallet jack
+                description: Manual, 2500 kg capacity
+                category: Handling
+                total_quantity: 140
+                active: false
+                created_at: '2026-10-22T01:14:50.123456Z'
+                updated_at: '2026-10-22T09:30:00.000001Z'
+        '400':
+          $ref: '#/components/responses/InvalidProductID'
+        '401':
+          $ref: '#/components/responses/AuthenticationRequired'
+        '403':
+          $ref: '#/components/responses/AdminRequired'
+        '404':
+          $ref: '#/components/responses/AdminProductNotFound'
+        '500':
+          $ref: '#/components/responses/ProductUpdateFailed'
+  /api/v1/admin/products/{id}/enable:
+    post:
+      operationId: enableProduct
+      summary: Enable a product
+      description: |
+        Returns a disabled product to normal use by setting `active` to
+        true. Admins only. Enabling a product that is already active changes
+        nothing (not even `updated_at`) and returns it with 200, so the call
+        is safe to retry.
+
+        No request body is needed; one that is sent is ignored.
+
+        Checks run in this order: the caller must be identified (401), the
+        id must be valid (400), the caller must be an admin (403), then the
+        product must exist (404). So a non-admin gets 403 for any valid id,
+        whether or not a product has it.
+      tags: [products]
+      security:
+        - devUser: []
+      parameters:
+        - $ref: '#/components/parameters/ProductID'
+      responses:
+        '200':
+          description: The product, now active.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Product'
+              example:
+                id: 42
+                sku: '000123'
+                name: Pallet jack
+                description: Manual, 2500 kg capacity
+                category: Handling
+                total_quantity: 140
+                active: true
+                created_at: '2026-10-22T01:14:50.123456Z'
+                updated_at: '2026-10-22T09:45:00.000001Z'
+        '400':
+          $ref: '#/components/responses/InvalidProductID'
+        '401':
+          $ref: '#/components/responses/AuthenticationRequired'
+        '403':
+          $ref: '#/components/responses/AdminRequired'
+        '404':
+          $ref: '#/components/responses/AdminProductNotFound'
+        '500':
+          $ref: '#/components/responses/ProductUpdateFailed'
   /healthz:
     get:
       operationId: getLiveness
@@ -695,6 +794,60 @@ components:
         format: int64
         minimum: 1
       example: 42
+  responses:
+    InvalidProductID:
+      description: |
+        The id in the path is not a positive integer of at most
+        9223372036854775807 written in ASCII digits.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error: invalid product id
+    AuthenticationRequired:
+      description: |
+        No `X-Dev-User` header was sent, or it names no active user
+        (`unknown dev user`, from the identity middleware).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          examples:
+            noIdentity:
+              summary: No X-Dev-User header
+              value:
+                error: authentication required
+            unknownUser:
+              summary: X-Dev-User names no active user
+              value:
+                error: unknown dev user
+    AdminRequired:
+      description: The caller is not an admin.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error: admin role required
+    AdminProductNotFound:
+      description: No product has this id. Admins see inactive products, so this only means the id doesn't exist.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error: product not found
+    ProductUpdateFailed:
+      description: |
+        The product could not be updated, or the `X-Dev-User` lookup
+        failed. Internal details are logged, never returned.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error: internal error
   schemas:
     SKU:
       type: string
