@@ -58,7 +58,6 @@ A wide event is a single structured record emitted once per unit of work (for ex
   "db.queries": 3,
   "db.duration_ms": 21.7,
   "stock.after": 140,
-  "product.category": "Seating",
   "build.version": "0.1.0"
 }
 ```
