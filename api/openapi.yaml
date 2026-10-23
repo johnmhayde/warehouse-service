@@ -22,9 +22,10 @@ info:
     header, so on any of them a header that names no active user gets
     `401 {"error": "unknown dev user"}`, and a failed lookup gets
     `500 {"error": "internal error"}`. `/healthz` and `/readyz` ignore the
-    header. Without the header a request carries no identity; only
-    endpoints that declare `devUser` security need one. Real authentication
-    replaces this in EP07.
+    header. Without the header a request carries no identity. Endpoints
+    whose security lists only `devUser` need one (401 without it);
+    endpoints that also list `{}` (no security) serve anonymous callers.
+    Real authentication replaces this in EP07.
 
     Admin endpoints live under `/api/v1/admin`.
 servers:
@@ -34,43 +35,62 @@ servers:
 # declare the devUser scheme (POC identity mode) themselves.
 security: []
 tags:
-  - name: items
-    description: Inventory items
   - name: products
-    description: Product catalog management (admin only)
+    description: The product catalog. Creating products is admin only.
   - name: health
     description: Liveness and readiness probes for container runtimes and load balancers
 paths:
-  /api/v1/items/{sku}:
+  /api/v1/products/{id}:
     get:
-      operationId: getItem
-      summary: Get an item by SKU
-      tags: [items]
+      operationId: getProduct
+      summary: Get a product by id
+      description: |
+        Returns one product by its numeric id. No identity is needed: the
+        `X-Dev-User` header is optional, and a request without it is served
+        as an anonymous, non-admin caller. Inactive products are only
+        visible to admins: non-admins and anonymous callers get the same
+        `404 product not found` as for an id that doesn't exist.
+
+        Checks run in this order: a header that is sent must name an active
+        user (401), then the id must be valid (400), then the product must
+        exist and be visible to the caller (404).
+      tags: [products]
+      security:
+        - {}
+        - devUser: []
       parameters:
-        - $ref: '#/components/parameters/SKU'
+        - $ref: '#/components/parameters/ProductID'
       responses:
         '200':
-          description: The item.
+          description: The product.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Item'
+                $ref: '#/components/schemas/Product'
               example:
-                sku: '123456'
+                id: 42
+                sku: '000123'
                 name: Pallet jack
-                quantity: 3
+                description: Manual, 2500 kg capacity
+                category: Handling
+                total_quantity: 140
+                active: true
+                created_at: '2026-10-22T01:14:50.123456Z'
+                updated_at: '2026-10-22T01:14:50.123456Z'
         '400':
-          description: The SKU in the path is not a valid SKU.
+          description: |
+            The id in the path is not a positive integer of at most
+            9223372036854775807 written in ASCII digits.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
               example:
-                error: invalid SKU
+                error: invalid product id
         '401':
           description: |
-            The `X-Dev-User` header names no active user. The header is
-            optional here; without it the item is still returned.
+            An `X-Dev-User` header was sent but names no active user (from
+            the identity middleware). Omitting the header is not an error.
           content:
             application/json:
               schema:
@@ -78,17 +98,19 @@ paths:
               example:
                 error: unknown dev user
         '404':
-          description: No item has this SKU.
+          description: |
+            No product has this id, or the product is inactive and the caller
+            is not an admin (a non-admin user or an anonymous caller).
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
               example:
-                error: item not found
+                error: product not found
         '500':
           description: |
-            The item could not be loaded, or the `X-Dev-User` lookup failed.
-            Internal details are logged, never returned.
+            The product could not be loaded, or the `X-Dev-User` lookup
+            failed. Internal details are logged, never returned.
           content:
             application/json:
               schema:
@@ -313,14 +335,16 @@ components:
         case-insensitively. The API trusts it as is, so it refuses to start
         with `APP_ENV=production`. Real authentication replaces this in EP07.
   parameters:
-    SKU:
-      name: sku
+    ProductID:
+      name: id
       in: path
       required: true
-      description: SKU of the item.
+      description: Product id (`Product.id`), a positive integer.
       schema:
-        $ref: '#/components/schemas/SKU'
-      example: '123456'
+        type: integer
+        format: int64
+        minimum: 1
+      example: 42
   schemas:
     SKU:
       type: string
@@ -331,23 +355,6 @@ components:
       examples:
         - '123456'
         - '004210'
-    Item:
-      type: object
-      additionalProperties: false
-      required: [sku, name, quantity]
-      properties:
-        sku:
-          $ref: '#/components/schemas/SKU'
-        name:
-          type: string
-          description: Display name of the item.
-          examples:
-            - Pallet jack
-        quantity:
-          type: integer
-          description: Units on hand.
-          examples:
-            - 3
     CreateProductRequest:
       type: object
       additionalProperties: false

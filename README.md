@@ -9,9 +9,9 @@ A warehouse inventory service with a dedicated frontend (TypeScript) and backend
 
 ## What it will do
 
-- **Inventory management:** create, view, update and retire SKUs/items, with quantities tracked per warehouse and per location (aisle/bin).
+- **Inventory management:** create, view, update and retire products (identified by SKU), with quantities tracked per warehouse and per location (aisle/bin).
 - **Stock movements:** record receiving, picking, transfers between locations or warehouses, and manual adjustments, keeping an auditable history.
-- **Search and filtering:** look up items by SKU, name, location or stock level.
+- **Search and filtering:** look up products by SKU, name, location or stock level.
 - **Frontend dashboard:** a TypeScript web UI for browsing inventory, making stock movements and checking current levels.
 - **Backend API:** a Go service that exposes the inventory operations over an HTTP API and owns persistence and business rules.
 
@@ -92,7 +92,7 @@ You need Docker. Go is optional.
 ```sh
 docker compose up --build          # Postgres, then migrations, then the API on :8080
 curl localhost:8080/readyz
-docker compose run --rm --build seed  # optional: local sample data (psql only; the API still serves items from memory)
+docker compose run --rm --build seed  # optional: local sample data (users and products)
 docker compose run --rm test       # unit + integration tests
 ```
 

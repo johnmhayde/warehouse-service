@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/johnmhayde/warehouse-service/api/internal/identity"
@@ -122,6 +123,67 @@ func (h *handler) createProduct(w http.ResponseWriter, r *http.Request) {
 	)
 	addProductOutcome(ctx, "created")
 	writeJSON(w, http.StatusCreated, newProductResponse(product))
+}
+
+// getProduct handles GET /api/v1/products/{id}. It needs no identity: a
+// caller without one is the zero (anonymous, non-admin) Actor. The service
+// hides inactive products from non-admins.
+func (h *handler) getProduct(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	var actor inventory.Actor
+	if id, ok := identity.From(ctx); ok {
+		telemetry.Add(ctx, slog.Int64("user.id", id.UserID))
+		actor = inventory.Actor{UserID: id.UserID, Admin: id.IsAdmin()}
+	}
+
+	productID, ok := parseProductID(r.PathValue("id"))
+	if !ok {
+		addProductOutcome(ctx, "invalid")
+		writeError(w, http.StatusBadRequest, "invalid product id")
+		return
+	}
+	telemetry.Add(ctx, slog.Int64("product.id", productID))
+
+	product, err := h.products.GetProduct(ctx, actor, productID)
+	switch {
+	case errors.Is(err, inventory.ErrNotFound):
+		addProductOutcome(ctx, "not_found")
+		// The client can't tell a hidden product from a missing one; the
+		// event can.
+		if errors.Is(err, inventory.ErrHidden) {
+			telemetry.Add(ctx, slog.Bool("product.hidden", true))
+		}
+		writeError(w, http.StatusNotFound, "product not found")
+		return
+	case err != nil:
+		addProductOutcome(ctx, "error")
+		telemetry.Add(ctx, slog.String("error.message", err.Error()))
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+
+	telemetry.Add(ctx, slog.String("product.sku", string(product.SKU)))
+	addProductOutcome(ctx, "found")
+	writeJSON(w, http.StatusOK, newProductResponse(product))
+}
+
+// parseProductID parses a product id from a path: a positive decimal
+// integer that fits in an int64 (products.id is a bigint). Only ASCII
+// digits are accepted, so signs, spaces and hex are rejected.
+func parseProductID(s string) (int64, bool) {
+	if s == "" {
+		return 0, false
+	}
+	for _, c := range []byte(s) {
+		if c < '0' || c > '9' {
+			return 0, false
+		}
+	}
+	id, err := strconv.ParseInt(s, 10, 64)
+	if err != nil || id <= 0 {
+		return 0, false
+	}
+	return id, true
 }
 
 // addProductOutcome records how a product request ended. Each request gets

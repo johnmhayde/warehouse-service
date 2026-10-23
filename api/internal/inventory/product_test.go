@@ -3,6 +3,7 @@ package inventory
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -16,6 +17,10 @@ type fakeProducts struct {
 	called     bool
 	gotActorID int64
 	got        NewProduct
+
+	// product is what GetProduct returns; gotID is the id it was asked for.
+	product Product
+	gotID   int64
 }
 
 func (f *fakeProducts) CreateProduct(ctx context.Context, actorID int64, p NewProduct) (Product, error) {
@@ -28,7 +33,19 @@ func (f *fakeProducts) CreateProduct(ctx context.Context, actorID int64, p NewPr
 	return Product{ID: 1, SKU: p.SKU, Name: p.Name, Description: p.Description, Category: p.Category, TotalQuantity: p.TotalQuantity, Active: true}, nil
 }
 
-var admin = Actor{UserID: 1, Admin: true}
+func (f *fakeProducts) GetProduct(ctx context.Context, id int64) (Product, error) {
+	f.called = true
+	f.gotID = id
+	if f.err != nil {
+		return Product{}, f.err
+	}
+	return f.product, nil
+}
+
+var (
+	admin     = Actor{UserID: 1, Admin: true}
+	requester = Actor{UserID: 2}
+)
 
 func TestCreateProductNormalizes(t *testing.T) {
 	tests := []struct {
@@ -127,19 +144,22 @@ func TestCreateProductForbidden(t *testing.T) {
 		// The role is checked first, so a requester can't probe the rules.
 		{"invalid product", NewProduct{SKU: "123456"}},
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			repo := &fakeProducts{}
+	// The zero Actor is anonymous and must never pass the admin check.
+	for _, actor := range []Actor{requester, {}} {
+		for _, tt := range tests {
+			t.Run(fmt.Sprintf("%+v %s", actor, tt.name), func(t *testing.T) {
+				repo := &fakeProducts{}
 
-			_, err := NewProductService(repo).CreateProduct(context.Background(), Actor{UserID: 2}, tt.in)
+				_, err := NewProductService(repo).CreateProduct(context.Background(), actor, tt.in)
 
-			if !errors.Is(err, ErrForbidden) {
-				t.Errorf("CreateProduct error = %v, want ErrForbidden", err)
-			}
-			if repo.called {
-				t.Error("repository called for a non-admin")
-			}
-		})
+				if !errors.Is(err, ErrForbidden) {
+					t.Errorf("CreateProduct error = %v, want ErrForbidden", err)
+				}
+				if repo.called {
+					t.Error("repository called for a non-admin")
+				}
+			})
+		}
 	}
 }
 
@@ -166,5 +186,69 @@ func TestCreateProductRepositoryError(t *testing.T) {
 
 	if !errors.Is(err, ErrDuplicateSKU) {
 		t.Errorf("CreateProduct error = %v, want ErrDuplicateSKU", err)
+	}
+}
+
+func TestGetProduct(t *testing.T) {
+	active := Product{ID: 7, SKU: "123456", Name: "Pallet jack", Active: true}
+	inactive := Product{ID: 8, SKU: "654321", Name: "Old pallet jack", Active: false}
+	tests := []struct {
+		name    string
+		actor   Actor
+		product Product
+		wantErr error
+	}{
+		{"requester, active", requester, active, nil},
+		{"anonymous, active", Actor{}, active, nil},
+		{"admin, active", admin, active, nil},
+		{"admin, inactive", admin, inactive, nil},
+		// Inactive products are hidden from everyone but admins, as if
+		// they didn't exist.
+		{"requester, inactive", requester, inactive, ErrHidden},
+		{"anonymous, inactive", Actor{}, inactive, ErrHidden},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := &fakeProducts{product: tt.product}
+
+			got, err := NewProductService(repo).GetProduct(context.Background(), tt.actor, tt.product.ID)
+
+			if repo.gotID != tt.product.ID {
+				t.Errorf("repository asked for id %d, want %d", repo.gotID, tt.product.ID)
+			}
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("GetProduct error = %v, want %v", err, tt.wantErr)
+			}
+			if tt.wantErr != nil {
+				if !reflect.DeepEqual(got, Product{}) {
+					t.Errorf("GetProduct = %+v with an error, want the zero Product", got)
+				}
+				return
+			}
+			if !reflect.DeepEqual(got, tt.product) {
+				t.Errorf("GetProduct = %+v, want %+v", got, tt.product)
+			}
+		})
+	}
+}
+
+func TestErrHiddenIsNotFound(t *testing.T) {
+	if !errors.Is(ErrHidden, ErrNotFound) {
+		t.Error("ErrHidden does not match ErrNotFound")
+	}
+	if errors.Is(ErrNotFound, ErrHidden) {
+		t.Error("ErrNotFound matches ErrHidden")
+	}
+}
+
+func TestGetProductRepositoryError(t *testing.T) {
+	for _, want := range []error{ErrNotFound, errors.New("db down")} {
+		repo := &fakeProducts{err: errors.Join(errors.New("postgres: get product"), want)}
+
+		_, err := NewProductService(repo).GetProduct(context.Background(), admin, 1)
+
+		if !errors.Is(err, want) {
+			t.Errorf("GetProduct error = %v, want %v", err, want)
+		}
 	}
 }

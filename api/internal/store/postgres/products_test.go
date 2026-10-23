@@ -181,3 +181,50 @@ func TestProductsCreateProductDuplicateSKU(t *testing.T) {
 		t.Errorf("CreateProduct error = %v, want ErrDuplicateSKU", err)
 	}
 }
+
+func TestProductsGetProduct(t *testing.T) {
+	pool := pgtest.Migrated(t)
+	ctx := context.Background()
+	products := NewProducts(pool)
+
+	created, err := products.CreateProduct(ctx, 1, inventory.NewProduct{SKU: "000123", Name: "Pallet jack", Description: "Manual", Category: "Handling"})
+	if err != nil {
+		t.Fatalf("CreateProduct: %v", err)
+	}
+	inactive, err := products.CreateProduct(ctx, 1, inventory.NewProduct{SKU: "123456", Name: "Shrink wrap"})
+	if err != nil {
+		t.Fatalf("CreateProduct: %v", err)
+	}
+	if _, err := pool.Exec(ctx, "UPDATE products SET active = false WHERE id = $1", inactive.ID); err != nil {
+		t.Fatalf("deactivate product: %v", err)
+	}
+	inactive.Active = false
+
+	for _, want := range []inventory.Product{created, inactive} {
+		t.Run(string(want.SKU), func(t *testing.T) {
+			got, err := products.GetProduct(ctx, want.ID)
+			if err != nil {
+				t.Fatalf("GetProduct: %v", err)
+			}
+			// The deactivation moves updated_at, so the timestamps are
+			// compared on their own.
+			if !got.CreatedAt.Equal(want.CreatedAt) || got.UpdatedAt.Before(want.UpdatedAt) {
+				t.Errorf("CreatedAt, UpdatedAt = %v, %v; want %v and not before %v", got.CreatedAt, got.UpdatedAt, want.CreatedAt, want.UpdatedAt)
+			}
+			got.CreatedAt, got.UpdatedAt = time.Time{}, time.Time{}
+			want.CreatedAt, want.UpdatedAt = time.Time{}, time.Time{}
+			if !reflect.DeepEqual(got, want) {
+				t.Errorf("GetProduct = %+v, want %+v", got, want)
+			}
+		})
+	}
+}
+
+func TestProductsGetProductNotFound(t *testing.T) {
+	pool := pgtest.Migrated(t)
+
+	_, err := NewProducts(pool).GetProduct(context.Background(), 999)
+	if !errors.Is(err, inventory.ErrNotFound) {
+		t.Errorf("GetProduct error = %v, want ErrNotFound", err)
+	}
+}

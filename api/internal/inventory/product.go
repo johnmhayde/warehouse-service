@@ -54,8 +54,14 @@ const maxTotalQuantity = math.MaxInt32
 const InitialStockReason = "Initial stock"
 
 var (
+	ErrNotFound     = errors.New("product not found")
 	ErrDuplicateSKU = errors.New("product with this SKU already exists")
 	ErrForbidden    = errors.New("admin role required")
+
+	// ErrHidden means the product exists but the caller may not see it. It
+	// wraps ErrNotFound, so callers that only check for ErrNotFound treat
+	// it as a missing product.
+	ErrHidden = fmt.Errorf("%w: inactive", ErrNotFound)
 )
 
 // ValidationError reports a product field that breaks a rule. Its message
@@ -71,7 +77,8 @@ func (e *ValidationError) Error() string {
 }
 
 // Actor is who a service call is made on behalf of. The HTTP layer builds
-// it from the request's identity.
+// it from the request's identity. The zero Actor is an anonymous caller:
+// no user, and not an admin.
 type Actor struct {
 	UserID int64
 	Admin  bool
@@ -85,6 +92,9 @@ type ProductRepository interface {
 	// product, a stock adjustment of that many units with reason
 	// InitialStockReason by the user actorID.
 	CreateProduct(ctx context.Context, actorID int64, p NewProduct) (Product, error)
+	// GetProduct returns the product with this id, active or not, or an
+	// error wrapping ErrNotFound if there is none.
+	GetProduct(ctx context.Context, id int64) (Product, error)
 }
 
 // ProductService holds the product catalog's business logic.
@@ -109,6 +119,21 @@ func (s *ProductService) CreateProduct(ctx context.Context, actor Actor, p NewPr
 		return Product{}, err
 	}
 	return s.repo.CreateProduct(ctx, actor.UserID, p)
+}
+
+// GetProduct returns the product with this id. Anyone may call it,
+// including an anonymous (zero) actor. Inactive products are retired from
+// normal use, so only admins see them: anyone else gets ErrHidden, which
+// wraps ErrNotFound like an id that doesn't exist.
+func (s *ProductService) GetProduct(ctx context.Context, actor Actor, id int64) (Product, error) {
+	p, err := s.repo.GetProduct(ctx, id)
+	if err != nil {
+		return Product{}, err
+	}
+	if !p.Active && !actor.Admin {
+		return Product{}, ErrHidden
+	}
+	return p, nil
 }
 
 // normalize trims p's name and category and checks every field except the

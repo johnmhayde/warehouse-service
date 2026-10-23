@@ -174,7 +174,7 @@ func TestHealthEndpointsSkipIdentity(t *testing.T) {
 			hc := health.New(logger)
 			hc.SetReady(true)
 			users := &failingUsers{}
-			srv := New(config.Config{}, logger, hc, nil, nil, users)
+			srv := New(config.Config{}, logger, hc, nil, users)
 
 			req := httptest.NewRequest(http.MethodGet, path, nil)
 			req.Header.Set(identity.DevUserHeader, "admin@example.com")
