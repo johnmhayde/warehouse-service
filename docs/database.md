@@ -189,7 +189,7 @@ users ──< stock_adjustments >── products
 | `active` | `boolean` | Default `true`. Deactivate users rather than deleting them |
 | `created_at`, `updated_at` | `timestamptz` | A trigger keeps `updated_at` current |
 
-**`products`**: the catalog, and current stock on hand.
+**`products`**: the catalog, and the number of units owned. Rented-out stock isn't stored here; it's derived from reservations ([ADR 0003](adr/0003-rental-model-and-reservation-visibility.md)).
 
 | Column | Type | Notes |
 | ------ | ---- | ----- |
