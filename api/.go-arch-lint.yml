@@ -22,7 +22,7 @@ allow:
   ignoreNotFoundComponents: true
   # The conventions are import rules. deepScan also treats passing a value
   # into another component's function as a dependency, so it reports the
-  # constructor injection in cmd/api (inventory.NewService(store)) as
+  # constructor injection in cmd/api (inventory.NewProductService(products)) as
   # "inventory depends on store" - the dependency inversion the conventions
   # ask for. Check imports only.
   deepScan: false
@@ -55,7 +55,6 @@ components:
 
   # Adapters around the domain.
   httpapi: { in: internal/httpapi/** }
-  store-memory: { in: internal/store/memory/** }
   store-postgres: { in: internal/store/postgres/** }
 
 deps:
@@ -96,9 +95,6 @@ deps:
     mayDependOn: [inventory, movement, identity, telemetry]
 
   # store/* implements domain interfaces; never httpapi/* or server.
-  store-memory:
-    mayDependOn: [inventory, movement]
-
   store-postgres:
     mayDependOn: [inventory, movement, identity]
     canUse: [pgx]

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/johnmhayde/warehouse-service/api/internal/identity"
@@ -121,6 +122,63 @@ func (h *handler) createProduct(w http.ResponseWriter, r *http.Request) {
 	telemetry.Add(ctx, slog.Int64("product.id", product.ID))
 	addProductOutcome(ctx, "created")
 	writeJSON(w, http.StatusCreated, newProductResponse(product))
+}
+
+// getProduct handles GET /api/v1/products/{id}. Any identified caller may
+// use it; the service hides inactive products from non-admins.
+func (h *handler) getProduct(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	id, ok := identity.From(ctx)
+	if !ok {
+		addProductOutcome(ctx, "unauthenticated")
+		writeError(w, http.StatusUnauthorized, "authentication required")
+		return
+	}
+	telemetry.Add(ctx, slog.Int64("user.id", id.UserID))
+
+	productID, ok := parseProductID(r.PathValue("id"))
+	if !ok {
+		addProductOutcome(ctx, "invalid")
+		writeError(w, http.StatusBadRequest, "invalid product id")
+		return
+	}
+	telemetry.Add(ctx, slog.Int64("product.id", productID))
+
+	product, err := h.products.GetProduct(ctx, inventory.Actor{UserID: id.UserID, Admin: id.IsAdmin()}, productID)
+	switch {
+	case errors.Is(err, inventory.ErrNotFound):
+		addProductOutcome(ctx, "not_found")
+		writeError(w, http.StatusNotFound, "product not found")
+		return
+	case err != nil:
+		addProductOutcome(ctx, "error")
+		telemetry.Add(ctx, slog.String("error.message", err.Error()))
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+
+	telemetry.Add(ctx, slog.String("product.sku", string(product.SKU)))
+	addProductOutcome(ctx, "found")
+	writeJSON(w, http.StatusOK, newProductResponse(product))
+}
+
+// parseProductID parses a product id from a path: a positive decimal
+// integer that fits in an int64 (products.id is a bigint). Only ASCII
+// digits are accepted, so signs, spaces and hex are rejected.
+func parseProductID(s string) (int64, bool) {
+	if s == "" {
+		return 0, false
+	}
+	for _, c := range []byte(s) {
+		if c < '0' || c > '9' {
+			return 0, false
+		}
+	}
+	id, err := strconv.ParseInt(s, 10, 64)
+	if err != nil || id <= 0 {
+		return 0, false
+	}
+	return id, true
 }
 
 // addProductOutcome records how a product request ended. Each request gets

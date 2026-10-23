@@ -14,7 +14,6 @@ import (
 	"github.com/johnmhayde/warehouse-service/api/internal/health"
 	"github.com/johnmhayde/warehouse-service/api/internal/inventory"
 	"github.com/johnmhayde/warehouse-service/api/internal/server"
-	"github.com/johnmhayde/warehouse-service/api/internal/store/memory"
 	"github.com/johnmhayde/warehouse-service/api/internal/store/postgres"
 )
 
@@ -65,14 +64,8 @@ func run(ctx context.Context, getenv func(string) string, stdout io.Writer) erro
 	hc := health.New(logger)
 	hc.AddCheck("postgres", pool.Ping)
 
-	// Items are still served from memory. A products repository built on
-	// the pool replaces this in WHS-305.
-	store := memory.New(
-		inventory.Item{SKU: "000123", Name: "Pallet jack", Quantity: 140},
-	)
-	items := inventory.NewService(store)
 	products := inventory.NewProductService(postgres.NewProducts(pool))
 
-	srv := server.New(cfg, logger, hc, items, products, postgres.NewUsers(pool))
+	srv := server.New(cfg, logger, hc, products, postgres.NewUsers(pool))
 	return srv.Run(ctx)
 }

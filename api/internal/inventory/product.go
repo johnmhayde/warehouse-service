@@ -48,6 +48,7 @@ const (
 )
 
 var (
+	ErrNotFound     = errors.New("product not found")
 	ErrDuplicateSKU = errors.New("product with this SKU already exists")
 	ErrForbidden    = errors.New("admin role required")
 )
@@ -76,6 +77,9 @@ type ProductRepository interface {
 	// CreateProduct stores p and returns the new product, or an error
 	// wrapping ErrDuplicateSKU if a product already has p.SKU.
 	CreateProduct(ctx context.Context, p NewProduct) (Product, error)
+	// GetProduct returns the product with this id, active or not, or an
+	// error wrapping ErrNotFound if there is none.
+	GetProduct(ctx context.Context, id int64) (Product, error)
 }
 
 // ProductService holds the product catalog's business logic.
@@ -100,6 +104,20 @@ func (s *ProductService) CreateProduct(ctx context.Context, actor Actor, p NewPr
 		return Product{}, err
 	}
 	return s.repo.CreateProduct(ctx, p)
+}
+
+// GetProduct returns the product with this id. Inactive products are
+// retired from normal use, so only admins see them: anyone else gets
+// ErrNotFound, the same as for an id that doesn't exist.
+func (s *ProductService) GetProduct(ctx context.Context, actor Actor, id int64) (Product, error) {
+	p, err := s.repo.GetProduct(ctx, id)
+	if err != nil {
+		return Product{}, err
+	}
+	if !p.Active && !actor.Admin {
+		return Product{}, ErrNotFound
+	}
+	return p, nil
 }
 
 // normalize trims p's name and category and checks every field except the

@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -13,7 +14,6 @@ import (
 	"github.com/johnmhayde/warehouse-service/api/internal/identity"
 	"github.com/johnmhayde/warehouse-service/api/internal/inventory"
 	"github.com/johnmhayde/warehouse-service/api/internal/pgtest"
-	"github.com/johnmhayde/warehouse-service/api/internal/store/memory"
 	"github.com/johnmhayde/warehouse-service/api/internal/store/postgres"
 )
 
@@ -36,7 +36,6 @@ func TestCreateProductEndToEnd(t *testing.T) {
 
 	logger := slog.New(slog.DiscardHandler)
 	srv := New(config.Config{}, logger, health.New(logger),
-		inventory.NewService(memory.New()),
 		inventory.NewProductService(postgres.NewProducts(pool)),
 		postgres.NewUsers(pool),
 	)
@@ -72,5 +71,71 @@ func TestCreateProductEndToEnd(t *testing.T) {
 	}
 	if count != 1 {
 		t.Errorf("products = %d, want 1", count)
+	}
+}
+
+// TestGetProductEndToEnd sends requests through the server's full handler,
+// wired the way cmd/api wires it, against a migrated database.
+func TestGetProductEndToEnd(t *testing.T) {
+	pool := pgtest.Migrated(t)
+	ctx := context.Background()
+	for _, u := range []struct{ email, role string }{
+		{"admin@example.com", "admin"},
+		{"requester@example.com", "requester"},
+	} {
+		if _, err := pool.Exec(ctx,
+			"INSERT INTO users (email, display_name, role) VALUES ($1, $2, $3)",
+			u.email, "Test user", u.role,
+		); err != nil {
+			t.Fatalf("insert user %s: %v", u.email, err)
+		}
+	}
+	var activeID, inactiveID int64
+	if err := pool.QueryRow(ctx,
+		"INSERT INTO products (sku, name, category) VALUES ('000123', 'Pallet jack', 'Handling') RETURNING id",
+	).Scan(&activeID); err != nil {
+		t.Fatalf("insert product: %v", err)
+	}
+	if err := pool.QueryRow(ctx,
+		"INSERT INTO products (sku, name, active) VALUES ('654321', 'Old pallet jack', false) RETURNING id",
+	).Scan(&inactiveID); err != nil {
+		t.Fatalf("insert product: %v", err)
+	}
+
+	logger := slog.New(slog.DiscardHandler)
+	srv := New(config.Config{}, logger, health.New(logger),
+		inventory.NewProductService(postgres.NewProducts(pool)),
+		postgres.NewUsers(pool),
+	)
+
+	tests := []struct {
+		name       string
+		devUser    string
+		id         int64
+		wantStatus int
+		wantBody   string
+	}{
+		{"requester, active", "requester@example.com", activeID, http.StatusOK, `"sku":"000123","name":"Pallet jack"`},
+		{"requester, inactive", "requester@example.com", inactiveID, http.StatusNotFound, `{"error":"product not found"}`},
+		{"admin, inactive", "admin@example.com", inactiveID, http.StatusOK, `"active":false`},
+		{"unknown id", "admin@example.com", inactiveID + 1000, http.StatusNotFound, `{"error":"product not found"}`},
+		{"no identity", "", activeID, http.StatusUnauthorized, `{"error":"authentication required"}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, fmt.Sprintf("/api/v1/products/%d", tt.id), nil)
+			if tt.devUser != "" {
+				req.Header.Set(identity.DevUserHeader, tt.devUser)
+			}
+			rec := httptest.NewRecorder()
+			srv.http.Handler.ServeHTTP(rec, req)
+
+			if rec.Code != tt.wantStatus {
+				t.Errorf("status = %d, want %d; body %s", rec.Code, tt.wantStatus, rec.Body)
+			}
+			if !strings.Contains(rec.Body.String(), tt.wantBody) {
+				t.Errorf("body = %s, want it to contain %s", rec.Body, tt.wantBody)
+			}
+		})
 	}
 }

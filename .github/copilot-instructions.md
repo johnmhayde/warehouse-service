@@ -21,7 +21,7 @@
 - Logic errors that could cause panics (nil dereference, nil map write, out-of-range index)
 - Ignored errors (`_ =` or unchecked returns) outside the few deliberate cases, such as encoding the response body after headers are written
 - Errors wrapped without `%w`, or compared with `==` instead of `errors.Is` / `errors.As`
-- Error context that doesn't add useful information (e.g. `fmt.Errorf("failed to get item: %w", err)` when the wrapped error already says so)
+- Error context that doesn't add useful information (e.g. `fmt.Errorf("failed to get product: %w", err)` when the wrapped error already says so)
 - Missing `defer rows.Close()`, unchecked `rows.Err()`, or transactions without a deferred `Rollback`
 - `pgx.ErrNoRows` not mapped to the domain's `ErrNotFound`
 - Goroutine leaks, unbuffered channels that can block forever, data races on shared state
