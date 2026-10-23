@@ -199,7 +199,7 @@ users ──< stock_adjustments >── products
 | `description` | `text` | Default `''` |
 | `category` | `text`, nullable | NULL means uncategorized; indexed |
 | `total_quantity` | `integer` | `>= 0`, default 0. Change it only together with a `stock_adjustments` row, in the same transaction. Creating a product through the API with `total_quantity` above 0 inserts both rows in one transaction, with an `"Initial stock"` adjustment by the creating admin; at 0 there is no adjustment |
-| `active` | `boolean` | Default `true`; indexed |
+| `active` | `boolean` | Default `true`; indexed. Set through `POST /api/v1/admin/products/{id}/disable` and `/enable`. Products are never deleted: disabling only clears the flag and keeps the product's history (stock adjustments). `GET /api/v1/products/{id}` hides inactive products from non-admins. EP04 reservations must reject inactive products on new and edited requests; existing reservations keep them |
 | `created_at`, `updated_at` | `timestamptz` | A trigger keeps `updated_at` current |
 
 **`stock_adjustments`**: the audit history of stock changes. Rows are only ever inserted. Exception: migration 00006 deleted the history of products with non-conforming SKUs, together with those products ([ADR 0002](adr/0002-six-digit-skus.md)).

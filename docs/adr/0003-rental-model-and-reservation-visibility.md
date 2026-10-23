@@ -37,6 +37,7 @@ Stakeholders also had to decide how much requesters see before they submit a res
 - The availability calculation (WHS-403/404) serves admin routes only. Requester-facing reservation routes (WHS-405–407) return only the caller's own data.
 - The admin queue and review screens (WHS-408/409) carry availability and overlapping pending reservations per line.
 - The reservations schema (WHS-401) needs a header and a lines table, whole-day date ranges, and a per-line approved quantity.
+- Products disabled through the admin API (WHS-308) can't be added to new or edited reservations (WHS-405/406); existing reservations keep them.
 - Locking products during approval serialises approvals that share a product. That's acceptable at this scale; WHS-415 tests the race for the last units.
 - Local API clients (Postman requests, which aren't kept in this repo) that call `/api/v1/items/{sku}` or send `reorder_threshold` must be updated.
 - If requesters later need to see availability, add it as a separate endpoint and update this ADR; nothing in the data model prevents it.

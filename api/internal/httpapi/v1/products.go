@@ -402,6 +402,63 @@ func (h *handler) updateProduct(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, newProductResponse(product))
 }
 
+// setProductActive returns the handler for POST
+// /api/v1/admin/products/{id}/disable (active false) and .../enable (active
+// true). Neither takes a body; one that is sent is ignored. Setting the flag
+// a product already has returns it unchanged with 200, so both are safe to
+// retry. product.outcome is "disabled" or "enabled" when the flag changed,
+// and "unchanged" when it didn't.
+func (h *handler) setProductActive(active bool) http.HandlerFunc {
+	changedOutcome := "disabled"
+	if active {
+		changedOutcome = "enabled"
+	}
+	return func(w http.ResponseWriter, r *http.Request) {
+		ctx := r.Context()
+		id, ok := identity.From(ctx)
+		if !ok {
+			addProductOutcome(ctx, "unauthenticated")
+			writeError(w, http.StatusUnauthorized, "authentication required")
+			return
+		}
+		telemetry.Add(ctx, slog.Int64("user.id", id.UserID))
+
+		productID, ok := parseProductID(r.PathValue("id"))
+		if !ok {
+			addProductOutcome(ctx, "invalid")
+			writeError(w, http.StatusBadRequest, "invalid product id")
+			return
+		}
+		telemetry.Add(ctx, slog.Int64("product.id", productID))
+
+		product, changed, err := h.products.SetProductActive(ctx,
+			inventory.Actor{UserID: id.UserID, Admin: id.IsAdmin()}, productID, active)
+		switch {
+		case errors.Is(err, inventory.ErrForbidden):
+			addProductOutcome(ctx, "forbidden")
+			writeError(w, http.StatusForbidden, "admin role required")
+			return
+		case errors.Is(err, inventory.ErrNotFound):
+			addProductOutcome(ctx, "not_found")
+			writeError(w, http.StatusNotFound, "product not found")
+			return
+		case err != nil:
+			addProductOutcome(ctx, "error")
+			telemetry.Add(ctx, slog.String("error.message", err.Error()))
+			writeError(w, http.StatusInternalServerError, "internal error")
+			return
+		}
+
+		telemetry.Add(ctx, slog.String("product.sku", string(product.SKU)))
+		if changed {
+			addProductOutcome(ctx, changedOutcome)
+		} else {
+			addProductOutcome(ctx, "unchanged")
+		}
+		writeJSON(w, http.StatusOK, newProductResponse(product))
+	}
+}
+
 // parseProductID parses a product id from a path: a positive decimal
 // integer that fits in an int64 (products.id is a bigint). Only ASCII
 // digits are accepted, so signs, spaces and hex are rejected.

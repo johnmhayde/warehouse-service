@@ -597,3 +597,82 @@ func TestProductsGetProductNotFound(t *testing.T) {
 		t.Errorf("GetProduct error = %v, want ErrNotFound", err)
 	}
 }
+
+// TestProductsSetProductActive disables a product with stock history and
+// enables it again, checking that only the flag changes and the history
+// stays.
+func TestProductsSetProductActive(t *testing.T) {
+	pool := pgtest.Migrated(t)
+	ctx := context.Background()
+	products := NewProducts(pool)
+
+	var adminID int64
+	if err := pool.QueryRow(ctx,
+		"INSERT INTO users (email, display_name, role) VALUES ('admin@example.com', 'Admin', 'admin') RETURNING id",
+	).Scan(&adminID); err != nil {
+		t.Fatalf("insert user: %v", err)
+	}
+	created, err := products.CreateProduct(ctx, adminID, inventory.NewProduct{SKU: "123456", Name: "Pallet jack", Category: "Handling", TotalQuantity: 12})
+	if err != nil {
+		t.Fatalf("CreateProduct: %v", err)
+	}
+	history := adjustmentsOf(t, pool, created.ID)
+	if len(history) != 1 {
+		t.Fatalf("stock adjustments = %+v, want the initial stock", history)
+	}
+
+	// The steps share the product, so they run in order. A step that
+	// changes the flag moves updated_at; one that doesn't leaves it.
+	steps := []struct {
+		name        string
+		active      bool
+		wantChanged bool
+	}{
+		{"disable", false, true},
+		{"disable again", false, false},
+		{"enable", true, true},
+		{"enable again", true, false},
+	}
+	prev := created
+	for _, st := range steps {
+		got, changed, err := products.SetProductActive(ctx, created.ID, st.active)
+		if err != nil {
+			t.Fatalf("%s: SetProductActive: %v", st.name, err)
+		}
+
+		if changed != st.wantChanged {
+			t.Errorf("%s: changed = %v, want %v", st.name, changed, st.wantChanged)
+		}
+		if moved := !got.UpdatedAt.Equal(prev.UpdatedAt); moved != st.wantChanged {
+			t.Errorf("%s: UpdatedAt = %v, previously %v; want moved = %v", st.name, got.UpdatedAt, prev.UpdatedAt, st.wantChanged)
+		}
+		// Everything but the flag and updated_at stays as created.
+		want := created
+		want.Active, want.UpdatedAt = st.active, got.UpdatedAt
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("%s: SetProductActive = %+v, want %+v", st.name, got, want)
+		}
+		stored, err := products.GetProduct(ctx, created.ID)
+		if err != nil {
+			t.Fatalf("%s: GetProduct: %v", st.name, err)
+		}
+		if !reflect.DeepEqual(stored, got) {
+			t.Errorf("%s: stored product = %+v, want the returned %+v", st.name, stored, got)
+		}
+		if adj := adjustmentsOf(t, pool, created.ID); !reflect.DeepEqual(adj, history) {
+			t.Errorf("%s: stock adjustments = %+v, want them unchanged: %+v", st.name, adj, history)
+		}
+		prev = got
+	}
+}
+
+func TestProductsSetProductActiveNotFound(t *testing.T) {
+	pool := pgtest.Migrated(t)
+
+	for _, active := range []bool{false, true} {
+		_, _, err := NewProducts(pool).SetProductActive(context.Background(), 999, active)
+		if !errors.Is(err, inventory.ErrNotFound) {
+			t.Errorf("SetProductActive(active %v) error = %v, want ErrNotFound", active, err)
+		}
+	}
+}
