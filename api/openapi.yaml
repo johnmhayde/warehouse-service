@@ -134,7 +134,6 @@ paths:
                   description: Manual, 2500 kg capacity
                   total_quantity: 4
                   category: Handling
-                  reorder_threshold: 5
               minimal:
                 summary: Required fields only
                 value:
@@ -154,7 +153,6 @@ paths:
                 description: Manual, 2500 kg capacity
                 category: Handling
                 total_quantity: 4
-                reorder_threshold: 5
                 active: true
                 created_at: '2026-10-22T01:14:50.123456Z'
                 updated_at: '2026-10-22T01:14:50.123456Z'
@@ -197,9 +195,6 @@ paths:
                 totalQuantityOutOfRange:
                   value:
                     error: total_quantity must be between 0 and 2147483647
-                reorderThresholdOutOfRange:
-                  value:
-                    error: reorder_threshold must be between 0 and 2147483647
         '401':
           description: |
             No `X-Dev-User` header was sent, or it names no active user
@@ -389,17 +384,10 @@ components:
           default: 0
           examples:
             - 40
-        reorder_threshold:
-          type: [integer, 'null']
-          description: Below this quantity the product counts as low stock. Omitted or null means no threshold.
-          minimum: 0
-          maximum: 2147483647
-          examples:
-            - 5
     Product:
       type: object
       additionalProperties: false
-      required: [id, sku, name, description, category, total_quantity, reorder_threshold, active, created_at, updated_at]
+      required: [id, sku, name, description, category, total_quantity, active, created_at, updated_at]
       properties:
         id:
           type: integer
@@ -425,10 +413,6 @@ components:
           type: integer
           minimum: 0
           description: Units the warehouse owns, including any that are rented out. For a new product, the `total_quantity` it was created with.
-        reorder_threshold:
-          type: [integer, 'null']
-          minimum: 0
-          description: Low-stock threshold; null when the product has none.
         active:
           type: boolean
           description: Inactive products are hidden from normal use rather than deleted. New products are active.

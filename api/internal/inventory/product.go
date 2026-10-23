@@ -20,11 +20,9 @@ type Product struct {
 	// Category is "" when the product is uncategorized.
 	Category      string
 	TotalQuantity int
-	// ReorderThreshold is nil when the product has no threshold.
-	ReorderThreshold *int
-	Active           bool
-	CreatedAt        time.Time
-	UpdatedAt        time.Time
+	Active        bool
+	CreatedAt     time.Time
+	UpdatedAt     time.Time
 }
 
 // NewProduct is what's needed to create a product. A new product starts
@@ -34,12 +32,11 @@ type Product struct {
 // an InitialStockReason adjustment of that many units by the creating user,
 // in the same transaction; at 0 it records none.
 type NewProduct struct {
-	SKU              SKU
-	Name             string
-	Description      string
-	Category         string
-	TotalQuantity    int
-	ReorderThreshold *int
+	SKU           SKU
+	Name          string
+	Description   string
+	Category      string
+	TotalQuantity int
 }
 
 // Limits on product fields, in characters (runes).
@@ -47,8 +44,6 @@ const (
 	maxNameLen        = 200
 	maxDescriptionLen = 2000
 	maxCategoryLen    = 100
-	// The products.reorder_threshold column is a 32-bit integer.
-	maxReorderThreshold = math.MaxInt32
 )
 
 // The products.total_quantity column is a 32-bit integer.
@@ -145,9 +140,6 @@ func (p NewProduct) normalize() (NewProduct, error) {
 		if strings.ContainsRune(f.value, 0) {
 			return NewProduct{}, &ValidationError{f.name, "must not contain NUL characters"}
 		}
-	}
-	if t := p.ReorderThreshold; t != nil && (*t < 0 || *t > maxReorderThreshold) {
-		return NewProduct{}, &ValidationError{"reorder_threshold", fmt.Sprintf("must be between 0 and %d", maxReorderThreshold)}
 	}
 	return p, nil
 }

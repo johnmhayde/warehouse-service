@@ -11,13 +11,13 @@ func TestAddRecordsAttrs(t *testing.T) {
 	ctx, e := NewContext(context.Background())
 
 	Add(ctx, slog.String("user.role", "admin"))
-	Add(ctx, slog.Int64("user.id", 7), slog.Bool("stock.below_reorder", true))
+	Add(ctx, slog.Int64("user.id", 7), slog.String("product.sku", "123456"))
 
 	got := e.Attrs()
 	want := []slog.Attr{
 		slog.String("user.role", "admin"),
 		slog.Int64("user.id", 7),
-		slog.Bool("stock.below_reorder", true),
+		slog.String("product.sku", "123456"),
 	}
 	if len(got) != len(want) {
 		t.Fatalf("Attrs = %v, want %v", got, want)

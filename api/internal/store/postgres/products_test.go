@@ -20,15 +20,13 @@ func TestProductsCreateProduct(t *testing.T) {
 	pool := pgtest.Migrated(t)
 	ctx := context.Background()
 	products := NewProducts(pool)
-	threshold := 5
 
 	tests := []struct {
 		name string
 		in   inventory.NewProduct
 	}{
 		{"defaults", inventory.NewProduct{SKU: "000123", Name: "Pallet jack"}},
-		{"all fields", inventory.NewProduct{SKU: "123456", Name: "Shrink wrap", Description: "500 mm roll", Category: "Packaging", ReorderThreshold: &threshold}},
-		{"zero threshold", inventory.NewProduct{SKU: "654321", Name: "Tape", ReorderThreshold: new(int)}},
+		{"all fields", inventory.NewProduct{SKU: "123456", Name: "Shrink wrap", Description: "500 mm roll", Category: "Packaging"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -47,12 +45,6 @@ func TestProductsCreateProduct(t *testing.T) {
 			}
 			if got.TotalQuantity != 0 || !got.Active {
 				t.Errorf("TotalQuantity, Active = %d, %v; want 0, true", got.TotalQuantity, got.Active)
-			}
-			switch {
-			case tt.in.ReorderThreshold == nil && got.ReorderThreshold != nil:
-				t.Errorf("ReorderThreshold = %d, want nil", *got.ReorderThreshold)
-			case tt.in.ReorderThreshold != nil && (got.ReorderThreshold == nil || *got.ReorderThreshold != *tt.in.ReorderThreshold):
-				t.Errorf("ReorderThreshold = %v, want %d", got.ReorderThreshold, *tt.in.ReorderThreshold)
 			}
 			if got.CreatedAt.Before(before.Add(-time.Minute)) || !got.UpdatedAt.Equal(got.CreatedAt) {
 				t.Errorf("CreatedAt, UpdatedAt = %v, %v; want now, equal", got.CreatedAt, got.UpdatedAt)
