@@ -13,11 +13,10 @@ import (
 )
 
 type createProductRequest struct {
-	SKU              string `json:"sku"`
-	Name             string `json:"name"`
-	Description      string `json:"description"`
-	Category         string `json:"category"`
-	ReorderThreshold *int   `json:"reorder_threshold"`
+	SKU         string `json:"sku"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Category    string `json:"category"`
 }
 
 type productResponse struct {
@@ -27,24 +26,22 @@ type productResponse struct {
 	Description string  `json:"description"`
 	Category    *string `json:"category"`
 	// TotalQuantity is stock on hand across the warehouse.
-	TotalQuantity    int       `json:"total_quantity"`
-	ReorderThreshold *int      `json:"reorder_threshold"`
-	Active           bool      `json:"active"`
-	CreatedAt        time.Time `json:"created_at"`
-	UpdatedAt        time.Time `json:"updated_at"`
+	TotalQuantity int       `json:"total_quantity"`
+	Active        bool      `json:"active"`
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
 }
 
 func newProductResponse(p inventory.Product) productResponse {
 	resp := productResponse{
-		ID:               p.ID,
-		SKU:              string(p.SKU),
-		Name:             p.Name,
-		Description:      p.Description,
-		TotalQuantity:    p.TotalQuantity,
-		ReorderThreshold: p.ReorderThreshold,
-		Active:           p.Active,
-		CreatedAt:        p.CreatedAt.UTC(),
-		UpdatedAt:        p.UpdatedAt.UTC(),
+		ID:            p.ID,
+		SKU:           string(p.SKU),
+		Name:          p.Name,
+		Description:   p.Description,
+		TotalQuantity: p.TotalQuantity,
+		Active:        p.Active,
+		CreatedAt:     p.CreatedAt.UTC(),
+		UpdatedAt:     p.UpdatedAt.UTC(),
 	}
 	if p.Category != "" {
 		resp.Category = &p.Category
@@ -88,11 +85,10 @@ func (h *handler) createProduct(w http.ResponseWriter, r *http.Request) {
 	product, err := h.products.CreateProduct(ctx,
 		inventory.Actor{UserID: id.UserID, Admin: id.IsAdmin()},
 		inventory.NewProduct{
-			SKU:              sku,
-			Name:             req.Name,
-			Description:      req.Description,
-			Category:         req.Category,
-			ReorderThreshold: req.ReorderThreshold,
+			SKU:         sku,
+			Name:        req.Name,
+			Description: req.Description,
+			Category:    req.Category,
 		},
 	)
 	var invalid *inventory.ValidationError

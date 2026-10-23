@@ -59,11 +59,6 @@ func (s *Store) CreateProduct(ctx context.Context, p inventory.NewProduct) (inve
 		CreatedAt:   now,
 		UpdatedAt:   now,
 	}
-	if p.ReorderThreshold != nil {
-		// Copied so the caller can't change the stored product.
-		threshold := *p.ReorderThreshold
-		product.ReorderThreshold = &threshold
-	}
 	s.products[p.SKU] = product
 	return product, nil
 }

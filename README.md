@@ -12,7 +12,6 @@ A warehouse inventory service with a dedicated frontend (TypeScript) and backend
 - **Inventory management:** create, view, update and retire SKUs/items, with quantities tracked per warehouse and per location (aisle/bin).
 - **Stock movements:** record receiving, picking, transfers between locations or warehouses, and manual adjustments, keeping an auditable history.
 - **Search and filtering:** look up items by SKU, name, location or stock level.
-- **Low-stock awareness:** show items that fall below a reorder threshold.
 - **Frontend dashboard:** a TypeScript web UI for browsing inventory, making stock movements and checking current levels.
 - **Backend API:** a Go service that exposes the inventory operations over an HTTP API and owns persistence and business rules.
 
@@ -59,7 +58,7 @@ A wide event is a single structured record emitted once per unit of work (for ex
   "db.queries": 3,
   "db.duration_ms": 21.7,
   "stock.after": 140,
-  "stock.below_reorder": false,
+  "product.category": "Seating",
   "build.version": "0.1.0"
 }
 ```
