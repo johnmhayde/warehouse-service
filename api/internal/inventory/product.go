@@ -10,8 +10,8 @@ import (
 	"unicode/utf8"
 )
 
-// Product is an entry in the product catalog, with its current stock on
-// hand.
+// Product is an entry in the product catalog, with the number of units the
+// warehouse owns.
 type Product struct {
 	ID          int64
 	SKU         SKU
