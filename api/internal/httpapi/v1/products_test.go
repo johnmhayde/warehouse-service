@@ -141,6 +141,17 @@ func TestCreateProductCreated(t *testing.T) {
 				`"total_quantity":0,"reorder_threshold":null,"active":true,` +
 				`"created_at":"2026-10-22T01:14:50.123456Z","updated_at":"2026-10-22T01:14:50.123456Z"}`,
 		},
+		{
+			name: "null initial stock",
+			body: `{"sku":"123456","name":"Folding chair","total_quantity":null}`,
+			product: inventory.Product{
+				ID: 10, SKU: "123456", Name: "Folding chair", Active: true, CreatedAt: created, UpdatedAt: created,
+			},
+			wantRequest: inventory.NewProduct{SKU: "123456", Name: "Folding chair"},
+			wantJSON: `{"id":10,"sku":"123456","name":"Folding chair","description":"","category":null,` +
+				`"total_quantity":0,"reorder_threshold":null,"active":true,` +
+				`"created_at":"2026-10-22T01:14:50.123456Z","updated_at":"2026-10-22T01:14:50.123456Z"}`,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -168,7 +179,7 @@ func TestCreateProductCreated(t *testing.T) {
 			want := map[string]slog.Value{
 				"user.id":                slog.Int64Value(1),
 				"product.sku":            slog.StringValue(string(tt.product.SKU)),
-				"product.total_quantity": slog.IntValue(tt.wantRequest.TotalQuantity),
+				"product.total_quantity": slog.IntValue(tt.product.TotalQuantity),
 				"product.id":             slog.Int64Value(tt.product.ID),
 				"product.outcome":        slog.StringValue("created"),
 			}
@@ -244,8 +255,8 @@ func TestCreateProductErrors(t *testing.T) {
 			if _, ok := attrs["product.sku"]; ok != tt.wantSKU {
 				t.Errorf("event has product.sku = %v, want %v", ok, tt.wantSKU)
 			}
-			if _, ok := attrs["product.total_quantity"]; ok != tt.wantSKU {
-				t.Errorf("event has product.total_quantity = %v, want %v", ok, tt.wantSKU)
+			if _, ok := attrs["product.total_quantity"]; ok {
+				t.Error("event has product.total_quantity for a failed request")
 			}
 			if got, ok := attrs["user.id"]; ok != (tt.id != nil) || (ok && got.Int64() != tt.id.UserID) {
 				t.Errorf("event user.id = %v (present %v), want the caller's id", got, ok)

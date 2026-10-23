@@ -378,10 +378,10 @@ components:
           examples:
             - Handling
         total_quantity:
-          type: integer
+          type: [integer, 'null']
           description: |
-            Number of units the warehouse owns. Omitted and 0 mean the same:
-            no stock and no adjustment. Above 0, the product is created with
+            Number of units the warehouse owns. Omitted, null and 0 mean the
+            same: no stock and no adjustment. Above 0, the product is created with
             an "Initial stock" stock adjustment of this many units by the
             caller.
           minimum: 0
@@ -424,7 +424,7 @@ components:
         total_quantity:
           type: integer
           minimum: 0
-          description: Units on hand across the warehouse. For a new product, the `total_quantity` it was created with.
+          description: Units the warehouse owns, including any that are rented out. For a new product, the `total_quantity` it was created with.
         reorder_threshold:
           type: [integer, 'null']
           minimum: 0

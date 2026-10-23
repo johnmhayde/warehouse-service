@@ -29,7 +29,7 @@ type Product struct {
 
 // NewProduct is what's needed to create a product. A new product starts
 // active. TotalQuantity is the number of units the warehouse owns (0 if
-// none yet). Stock on hand only ever changes together with a stock
+// none yet). TotalQuantity only ever changes together with a stock
 // adjustment, so when TotalQuantity is above 0 the repository also records
 // an InitialStockReason adjustment of that many units by the creating user,
 // in the same transaction; at 0 it records none.
