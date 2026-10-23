@@ -13,21 +13,23 @@ import (
 type fakeProducts struct {
 	err error
 
-	called bool
-	got    NewProduct
+	called     bool
+	gotActorID int64
+	got        NewProduct
 
 	// product is what GetProduct returns; gotID is the id it was asked for.
 	product Product
 	gotID   int64
 }
 
-func (f *fakeProducts) CreateProduct(ctx context.Context, p NewProduct) (Product, error) {
+func (f *fakeProducts) CreateProduct(ctx context.Context, actorID int64, p NewProduct) (Product, error) {
 	f.called = true
+	f.gotActorID = actorID
 	f.got = p
 	if f.err != nil {
 		return Product{}, f.err
 	}
-	return Product{ID: 1, SKU: p.SKU, Name: p.Name, Description: p.Description, Category: p.Category, ReorderThreshold: p.ReorderThreshold, Active: true}, nil
+	return Product{ID: 1, SKU: p.SKU, Name: p.Name, Description: p.Description, Category: p.Category, TotalQuantity: p.TotalQuantity, Active: true}, nil
 }
 
 func (f *fakeProducts) GetProduct(ctx context.Context, id int64) (Product, error) {
@@ -66,14 +68,19 @@ func TestCreateProductNormalizes(t *testing.T) {
 			NewProduct{SKU: "123456", Name: "Pallet jack"},
 		},
 		{
-			"zero threshold",
-			NewProduct{SKU: "123456", Name: "Pallet jack", ReorderThreshold: ptr(0)},
-			NewProduct{SKU: "123456", Name: "Pallet jack", ReorderThreshold: ptr(0)},
+			"initial stock",
+			NewProduct{SKU: "123456", Name: "Pallet jack", TotalQuantity: 12},
+			NewProduct{SKU: "123456", Name: "Pallet jack", TotalQuantity: 12},
+		},
+		{
+			"largest total quantity",
+			NewProduct{SKU: "123456", Name: "Pallet jack", TotalQuantity: 2147483647},
+			NewProduct{SKU: "123456", Name: "Pallet jack", TotalQuantity: 2147483647},
 		},
 		{
 			"longest allowed fields",
-			NewProduct{SKU: "123456", Name: strings.Repeat("é", 200), Description: strings.Repeat("é", 2000), Category: strings.Repeat("é", 100), ReorderThreshold: ptr(2147483647)},
-			NewProduct{SKU: "123456", Name: strings.Repeat("é", 200), Description: strings.Repeat("é", 2000), Category: strings.Repeat("é", 100), ReorderThreshold: ptr(2147483647)},
+			NewProduct{SKU: "123456", Name: strings.Repeat("é", 200), Description: strings.Repeat("é", 2000), Category: strings.Repeat("é", 100)},
+			NewProduct{SKU: "123456", Name: strings.Repeat("é", 200), Description: strings.Repeat("é", 2000), Category: strings.Repeat("é", 100)},
 		},
 	}
 	for _, tt := range tests {
@@ -104,8 +111,8 @@ func TestCreateProductValidation(t *testing.T) {
 		{"NUL in name", NewProduct{SKU: "123456", Name: "a\x00b"}, "name must not contain NUL characters"},
 		{"NUL in description", NewProduct{SKU: "123456", Name: "x", Description: "a\x00"}, "description must not contain NUL characters"},
 		{"NUL in category", NewProduct{SKU: "123456", Name: "x", Category: "\x00a"}, "category must not contain NUL characters"},
-		{"negative threshold", NewProduct{SKU: "123456", Name: "x", ReorderThreshold: ptr(-1)}, "reorder_threshold must be between 0 and 2147483647"},
-		{"threshold too large", NewProduct{SKU: "123456", Name: "x", ReorderThreshold: ptr(2147483648)}, "reorder_threshold must be between 0 and 2147483647"},
+		{"negative total quantity", NewProduct{SKU: "123456", Name: "x", TotalQuantity: -1}, "total_quantity must be between 0 and 2147483647"},
+		{"total quantity too large", NewProduct{SKU: "123456", Name: "x", TotalQuantity: 2147483648}, "total_quantity must be between 0 and 2147483647"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -149,6 +156,22 @@ func TestCreateProductForbidden(t *testing.T) {
 				t.Error("repository called for a non-admin")
 			}
 		})
+	}
+}
+
+func TestCreateProductPassesActorToRepository(t *testing.T) {
+	repo := &fakeProducts{}
+
+	got, err := NewProductService(repo).CreateProduct(context.Background(), Actor{UserID: 7, Admin: true}, NewProduct{SKU: "123456", Name: "Pallet jack", TotalQuantity: 3})
+	if err != nil {
+		t.Fatalf("CreateProduct: %v", err)
+	}
+
+	if repo.gotActorID != 7 {
+		t.Errorf("repository got actor id %d, want 7", repo.gotActorID)
+	}
+	if got.TotalQuantity != 3 {
+		t.Errorf("TotalQuantity = %d, want 3", got.TotalQuantity)
 	}
 }
 
@@ -223,5 +246,3 @@ func TestGetProductRepositoryError(t *testing.T) {
 		}
 	}
 }
-
-func ptr(n int) *int { return &n }

@@ -41,7 +41,7 @@ Follow `docs/conventions.md`. Flag code that:
 - Puts business logic in `cmd/api/main.go`, or reads env vars outside `internal/config`
 - Introduces `pkg/`, `utils`, `common`, `models` or `services` packages
 - Uses a third-party router instead of `http.ServeMux` method + path patterns
-- Makes a breaking change to a `/api/v1` response instead of adding `httpapi/v2`
+- Makes a breaking change to a `/api/v1` response instead of adding `httpapi/v2` (exception: until v1 has its first consumer, see `docs/adr/0003-rental-model-and-reservation-visibility.md`)
 - Derives request contexts from the server's root context (breaks graceful drain)
 - Adds an `http.Server` without read-header, read, write and idle timeouts
 - Runs migrations or DDL from the API process — migrations run only via `cmd/migrate`
@@ -51,7 +51,7 @@ Follow `docs/conventions.md`. Flag code that:
 - New constraints without an explicit `<table>_<column>_<rule>` name, or without a test in `migrations/schema_test.go`
 - Postgres enum types where a `CHECK` constraint would do
 - `ON DELETE CASCADE` on audit-trail foreign keys (we use `RESTRICT` and deactivate instead)
-- Changes that break the currently deployed API version (renames/drops must be split expand/contract)
+- Changes that break the currently deployed API version (renames/drops must be split expand/contract; not needed while nothing is deployed, see ADR 0003)
 - `CREATE INDEX CONCURRENTLY` without `-- +goose NO TRANSACTION`
 
 ### Telemetry & Logging

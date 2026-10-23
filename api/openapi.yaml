@@ -70,7 +70,6 @@ paths:
                 description: Manual, 2500 kg capacity
                 category: Handling
                 total_quantity: 140
-                reorder_threshold: 5
                 active: true
                 created_at: '2026-10-22T01:14:50.123456Z'
                 updated_at: '2026-10-22T01:14:50.123456Z'
@@ -127,9 +126,12 @@ paths:
       summary: Create a product
       description: |
         Adds a product to the catalog. Admins only. A new product starts
-        active with `total_quantity` 0; stock changes only through stock
-        adjustments. `name` and `category` are trimmed, and an empty or
-        blank `category` means uncategorized.
+        active with `total_quantity` units owned (0 if omitted). Stock
+        changes only through stock adjustments, so when `total_quantity` is
+        above 0 the product is created together with an "Initial stock"
+        adjustment of that many units by the caller, atomically; at 0 no
+        adjustment is recorded. `name` and `category` are trimmed, and an
+        empty or blank `category` means uncategorized.
 
         Checks run in this order: the caller must be identified (401); the
         body must be a single JSON object of at most 64 KiB (413) with only
@@ -155,8 +157,8 @@ paths:
                   sku: '000123'
                   name: Pallet jack
                   description: Manual, 2500 kg capacity
+                  total_quantity: 4
                   category: Handling
-                  reorder_threshold: 5
               minimal:
                 summary: Required fields only
                 value:
@@ -175,8 +177,7 @@ paths:
                 name: Pallet jack
                 description: Manual, 2500 kg capacity
                 category: Handling
-                total_quantity: 0
-                reorder_threshold: 5
+                total_quantity: 4
                 active: true
                 created_at: '2026-10-22T01:14:50.123456Z'
                 updated_at: '2026-10-22T01:14:50.123456Z'
@@ -216,9 +217,9 @@ paths:
                   summary: A text field contains U+0000 (name, description or category)
                   value:
                     error: name must not contain NUL characters
-                reorderThresholdOutOfRange:
+                totalQuantityOutOfRange:
                   value:
-                    error: reorder_threshold must be between 0 and 2147483647
+                    error: total_quantity must be between 0 and 2147483647
         '401':
           description: |
             No `X-Dev-User` header was sent, or it names no active user
@@ -381,17 +382,22 @@ components:
           maxLength: 100
           examples:
             - Handling
-        reorder_threshold:
+        total_quantity:
           type: [integer, 'null']
-          description: Below this quantity the product counts as low stock. Omitted or null means no threshold.
+          description: |
+            Number of units the warehouse owns. Omitted, null and 0 mean the
+            same: no stock and no adjustment. Above 0, the product is created with
+            an "Initial stock" stock adjustment of this many units by the
+            caller.
           minimum: 0
           maximum: 2147483647
+          default: 0
           examples:
-            - 5
+            - 40
     Product:
       type: object
       additionalProperties: false
-      required: [id, sku, name, description, category, total_quantity, reorder_threshold, active, created_at, updated_at]
+      required: [id, sku, name, description, category, total_quantity, active, created_at, updated_at]
       properties:
         id:
           type: integer
@@ -416,11 +422,7 @@ components:
         total_quantity:
           type: integer
           minimum: 0
-          description: Units on hand across the warehouse. Always 0 for a new product.
-        reorder_threshold:
-          type: [integer, 'null']
-          minimum: 0
-          description: Low-stock threshold; null when the product has none.
+          description: Units the warehouse owns, including any that are rented out. For a new product, the `total_quantity` it was created with.
         active:
           type: boolean
           description: Inactive products are hidden from normal use rather than deleted. New products are active.

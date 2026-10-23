@@ -23,7 +23,7 @@ func NewProducts(pool *pgxpool.Pool) *Products {
 }
 
 // productColumns are the columns scanProduct reads, in order.
-const productColumns = `id, sku, name, description, category, total_quantity, reorder_threshold, active, created_at, updated_at`
+const productColumns = `id, sku, name, description, category, total_quantity, active, created_at, updated_at`
 
 // scanProduct scans a row of productColumns. A NULL category becomes "".
 func scanProduct(row pgx.Row) (inventory.Product, error) {
@@ -32,7 +32,7 @@ func scanProduct(row pgx.Row) (inventory.Product, error) {
 		category *string
 	)
 	err := row.Scan(&p.ID, &p.SKU, &p.Name, &p.Description, &category, &p.TotalQuantity,
-		&p.ReorderThreshold, &p.Active, &p.CreatedAt, &p.UpdatedAt)
+		&p.Active, &p.CreatedAt, &p.UpdatedAt)
 	if err != nil {
 		return inventory.Product{}, err
 	}
@@ -42,14 +42,23 @@ func scanProduct(row pgx.Row) (inventory.Product, error) {
 	return p, nil
 }
 
-// CreateProduct inserts p. total_quantity, active and the timestamps take
-// their column defaults, and an empty category is stored as NULL.
-func (s *Products) CreateProduct(ctx context.Context, p inventory.NewProduct) (inventory.Product, error) {
-	out, err := scanProduct(s.pool.QueryRow(ctx,
-		`INSERT INTO products (sku, name, description, category, reorder_threshold)
+// CreateProduct inserts p. active and the timestamps take their column
+// defaults, and an empty category is stored as NULL. When p.TotalQuantity
+// is above 0, the same transaction inserts the matching "Initial stock"
+// stock_adjustments row by actorID, as the products table requires.
+func (s *Products) CreateProduct(ctx context.Context, actorID int64, p inventory.NewProduct) (inventory.Product, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return inventory.Product{}, fmt.Errorf("begin: %w", err)
+	}
+	// Rollback after a successful Commit is a no-op.
+	defer tx.Rollback(ctx)
+
+	out, err := scanProduct(tx.QueryRow(ctx,
+		`INSERT INTO products (sku, name, description, category, total_quantity)
 		VALUES ($1, $2, $3, NULLIF($4, ''), $5)
 		RETURNING `+productColumns,
-		string(p.SKU), p.Name, p.Description, p.Category, p.ReorderThreshold,
+		string(p.SKU), p.Name, p.Description, p.Category, p.TotalQuantity,
 	))
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) && pgErr.Code == uniqueViolation && pgErr.ConstraintName == "products_sku_key" {
@@ -57,6 +66,20 @@ func (s *Products) CreateProduct(ctx context.Context, p inventory.NewProduct) (i
 	}
 	if err != nil {
 		return inventory.Product{}, fmt.Errorf("insert product: %w", err)
+	}
+
+	if out.TotalQuantity > 0 {
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO stock_adjustments (product_id, delta, quantity_after, reason, actor_id)
+			VALUES ($1, $2, $2, $3, $4)`,
+			out.ID, out.TotalQuantity, inventory.InitialStockReason, actorID,
+		); err != nil {
+			return inventory.Product{}, fmt.Errorf("insert initial stock adjustment: %w", err)
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return inventory.Product{}, fmt.Errorf("commit: %w", err)
 	}
 	return out, nil
 }

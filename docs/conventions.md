@@ -57,7 +57,7 @@ Rules:
 
 ## HTTP
 
-- **Versioning:** public endpoints live under `/api/v1`. A breaking change gets a new `httpapi/v2` package mounted at `/api/v2`, next to v1 and reusing the same domain services. Additive changes (new fields, new endpoints) stay in the current version.
+- **Versioning:** public endpoints live under `/api/v1`. A breaking change gets a new `httpapi/v2` package mounted at `/api/v2`, next to v1 and reusing the same domain services. Exception: until v1 has its first consumer, breaking changes stay in v1 ([ADR 0003](adr/0003-rental-model-and-reservation-visibility.md)). Additive changes (new fields, new endpoints) stay in the current version.
 - **Infrastructure endpoints aren't versioned:** `/healthz` (liveness) and `/readyz` (readiness).
 - **Routing:** use the standard library `http.ServeMux` with method + path patterns (`"GET /api/v1/products/{id}"`). Read path values with `r.PathValue("id")`.
 - **Contract:** [`api/openapi.yaml`](../api/openapi.yaml) (OpenAPI 3.1) describes every endpoint the code serves: status codes, JSON field names and error bodies. The handlers are the source of truth; a change that adds an endpoint or changes a status code, field or error body updates the spec in the same PR. Planned endpoints don't go in it until they exist. Lint it without a local install with `docker run --rm -v "$PWD/api:/spec" redocly/cli lint /spec/openapi.yaml`.
@@ -94,10 +94,10 @@ Secrets (currently just `DB_PASSWORD`) are injected from Kubernetes Secrets as e
 
 - Logs are written with `log/slog` and its JSON handler to stdout.
 - Request middleware emits **one event per request**: the wide event described in the README. Handlers enrich the request's event with `telemetry.Add(ctx, attrs...)` instead of logging their own lines, and the event's attributes are emitted on the single per-request `http request` log line. OpenTelemetry spans wait for WHS-201.
-- Field names are lowercase, dot-namespaced and snake_case within a segment: `http.method`, `http.route`, `http.status`, `duration_ms`, `warehouse.id`, `stock.below_reorder`. The frontend uses the same names.
+- Field names are lowercase, dot-namespaced and snake_case within a segment: `http.method`, `http.route`, `http.status`, `duration_ms`, `warehouse.id`, `product.sku`. The frontend uses the same names.
 - `http.route` is the matched pattern (`GET /api/v1/products/{id}`), not the raw path, so it can be grouped on. The raw path goes in `http.path`.
 - Units go in the field name (`_ms`, `_bytes`).
-- A handler records how its request ended in one `<entity>.outcome` field (e.g. `product.outcome`: `created`, `found`, `unauthenticated`, `forbidden`, `invalid`, `not_found`, `duplicate_sku`, `error`), along with the ids it knows (`user.id`, `product.sku`, `product.id`). `product.hidden` is `true` when a product exists but the caller may not see it (an inactive product requested by a non-admin), so it can be told apart from an unknown id although both get the same 404. On a 500 the internal error goes in `error.message`, never in the response.
+- A handler records how its request ended in one `<entity>.outcome` field (e.g. `product.outcome`: `created`, `found`, `unauthenticated`, `forbidden`, `invalid`, `not_found`, `duplicate_sku`, `error`), along with the ids it knows (`user.id`, `product.sku`, `product.id`) and, on success, what was stored (`product.total_quantity`: the units the warehouse owns of the created product). `product.hidden` is `true` when a product exists but the caller may not see it (an inactive product requested by a non-admin), so it can be told apart from an unknown id although both get the same 404. On a 500 the internal error goes in `error.message`, never in the response.
 
 ## Testing
 

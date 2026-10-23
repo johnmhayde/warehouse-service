@@ -154,7 +154,7 @@ Everything runs through `docker compose`. You don't need Go installed.
 It inserts:
 
 - 3 users with `@example.com` addresses: `admin@example.com` (admin), `robin@example.com` and `casey@example.com` (requesters).
-- 20 products with 6-digit SKUs (`100101`–`700701`) across a few categories (one uncategorized), some below their reorder threshold and two out of stock.
+- 20 products with 6-digit SKUs (`100101`–`700701`) across a few categories (one uncategorized), two of them out of stock.
 - One `stock_adjustments` row per product that starts with stock ("Opening stock (local seed data)", by the admin), so each product's `total_quantity` equals the sum of its adjustments, as the schema requires.
 
 It's safe to re-run. Every insert uses `ON CONFLICT DO NOTHING`, and opening-stock adjustments are only written for products that the same run actually inserted. A re-run, or a seed SKU you've already created yourself, adds nothing and doesn't change existing stock. psql's `INSERT 0 n` output shows how many rows were added: users first, then stock adjustments.
@@ -189,7 +189,7 @@ users ──< stock_adjustments >── products
 | `active` | `boolean` | Default `true`. Deactivate users rather than deleting them |
 | `created_at`, `updated_at` | `timestamptz` | A trigger keeps `updated_at` current |
 
-**`products`**: the catalog, and current stock on hand.
+**`products`**: the catalog, and current stock on hand. Under [ADR 0003](adr/0003-rental-model-and-reservation-visibility.md), `total_quantity` is the number of units owned, and rented-out stock will be derived from reservations (WHS-401), not stored here.
 
 | Column | Type | Notes |
 | ------ | ---- | ----- |
@@ -198,8 +198,7 @@ users ──< stock_adjustments >── products
 | `name` | `text` | Non-blank; trigram-indexed for `ILIKE '%term%'` search |
 | `description` | `text` | Default `''` |
 | `category` | `text`, nullable | NULL means uncategorized; indexed |
-| `total_quantity` | `integer` | `>= 0`, default 0. Change it only together with a `stock_adjustments` row, in the same transaction |
-| `reorder_threshold` | `integer`, nullable | `>= 0`. Stock below it counts as low |
+| `total_quantity` | `integer` | `>= 0`, default 0. Change it only together with a `stock_adjustments` row, in the same transaction. Creating a product through the API with `total_quantity` above 0 inserts both rows in one transaction, with an `"Initial stock"` adjustment by the creating admin; at 0 there is no adjustment |
 | `active` | `boolean` | Default `true`; indexed |
 | `created_at`, `updated_at` | `timestamptz` | A trigger keeps `updated_at` current |
 
@@ -226,7 +225,7 @@ Conventions used throughout:
 
 ## Writing a migration
 
-1. Add the next numbered file to `api/migrations/`, e.g. `00007_add_product_unit.sql`:
+1. Add the next numbered file to `api/migrations/`, e.g. `00008_add_product_unit.sql`:
    ```sql
    -- +goose Up
    ALTER TABLE products ADD COLUMN unit text NOT NULL DEFAULT 'each';
