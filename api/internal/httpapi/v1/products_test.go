@@ -1077,6 +1077,31 @@ func TestUpdateProductUpdated(t *testing.T) {
 				`"created_at":"2026-10-22T01:14:50.123456Z","updated_at":"2026-10-22T02:44:50.123456Z"}`,
 		},
 		{
+			// A key sent twice: the last one wins, as for every field.
+			name: "null name then a name",
+			body: `{"name":null,"name":"Pallet jack"}`,
+			product: inventory.Product{
+				ID: 42, SKU: "000123", Name: "Pallet jack", Active: true, CreatedAt: created, UpdatedAt: updated,
+			},
+			wantRequest: inventory.ProductUpdate{Name: strPtr("Pallet jack")},
+			wantFields:  "name",
+			wantJSON: `{"id":42,"sku":"000123","name":"Pallet jack","description":"","category":null,` +
+				`"total_quantity":0,"active":true,` +
+				`"created_at":"2026-10-22T01:14:50.123456Z","updated_at":"2026-10-22T02:44:50.123456Z"}`,
+		},
+		{
+			name: "category then null",
+			body: `{"category":"Handling","category":null}`,
+			product: inventory.Product{
+				ID: 42, SKU: "000123", Name: "Pallet jack", Active: true, CreatedAt: created, UpdatedAt: updated,
+			},
+			wantRequest: inventory.ProductUpdate{Category: strPtr("")},
+			wantFields:  "category",
+			wantJSON: `{"id":42,"sku":"000123","name":"Pallet jack","description":"","category":null,` +
+				`"total_quantity":0,"active":true,` +
+				`"created_at":"2026-10-22T01:14:50.123456Z","updated_at":"2026-10-22T02:44:50.123456Z"}`,
+		},
+		{
 			name: "empty category and description",
 			body: `{"description":"","category":""}`,
 			product: inventory.Product{
@@ -1180,6 +1205,7 @@ func TestUpdateProductErrors(t *testing.T) {
 		{"requester, total quantity", &requesterID, path, `{"total_quantity":5}`, nil, http.StatusBadRequest, "total_quantity can't be changed here; use stock adjustments", "invalid", true, false},
 		{"null name", &adminID, path, `{"name":null}`, nil, http.StatusBadRequest, "name must not be null", "invalid", true, false},
 		{"null description", &adminID, path, `{"description":null}`, nil, http.StatusBadRequest, "description must not be null", "invalid", true, false},
+		{"name then null", &adminID, path, `{"name":"Pallet jack","name":null}`, nil, http.StatusBadRequest, "name must not be null", "invalid", true, false},
 		{"empty update", &adminID, path, `{}`, inventory.ErrEmptyUpdate, http.StatusBadRequest, "no fields to update", "invalid", true, true},
 		{"validation error", &adminID, path, valid, &inventory.ValidationError{Field: "name", Reason: "must not be blank"}, http.StatusBadRequest, "name must not be blank", "invalid", true, true},
 		{"forbidden", &requesterID, path, valid, inventory.ErrForbidden, http.StatusForbidden, "admin role required", "forbidden", true, true},

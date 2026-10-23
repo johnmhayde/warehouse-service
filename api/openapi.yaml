@@ -465,8 +465,10 @@ paths:
         `total_quantity` and no null `name` or `description` (400); the
         caller must be an admin (403); then at least one field must be sent
         and the product rules apply (400), and the product must exist
-        (404). So a non-admin gets 403 for any request whose id is valid
-        and whose body decodes, whatever its field values. The
+        (404). So a non-admin gets 403 for any request that passes the
+        shape checks (a valid id, a body that decodes, no `total_quantity`
+        and no null `name` or `description`), whatever its other field
+        values. The
         `Content-Type` header is not checked; the body is always parsed as
         JSON.
       tags: [products]

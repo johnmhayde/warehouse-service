@@ -40,9 +40,13 @@ type optional[T any] struct {
 }
 
 func (o *optional[T]) UnmarshalJSON(b []byte) error {
+	// A key sent twice is decoded twice; like the rest of the decoder, the
+	// last one wins.
 	o.Set = true
-	if string(b) == "null" {
-		o.Null = true
+	o.Null = string(b) == "null"
+	if o.Null {
+		var zero T
+		o.Value = zero
 		return nil
 	}
 	return json.Unmarshal(b, &o.Value)
