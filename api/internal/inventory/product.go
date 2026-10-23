@@ -4,13 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 	"time"
 	"unicode/utf8"
 )
 
-// Product is an entry in the product catalog, with its current stock on
-// hand.
+// Product is an entry in the product catalog, with the number of units the
+// warehouse owns.
 type Product struct {
 	ID          int64
 	SKU         SKU
@@ -25,13 +26,17 @@ type Product struct {
 }
 
 // NewProduct is what's needed to create a product. A new product starts
-// active with no stock: TotalQuantity only ever changes together with a
-// stock adjustment.
+// active. TotalQuantity is the number of units the warehouse owns (0 if
+// none yet). TotalQuantity only ever changes together with a stock
+// adjustment, so when TotalQuantity is above 0 the repository also records
+// an InitialStockReason adjustment of that many units by the creating user,
+// in the same transaction; at 0 it records none.
 type NewProduct struct {
-	SKU         SKU
-	Name        string
-	Description string
-	Category    string
+	SKU           SKU
+	Name          string
+	Description   string
+	Category      string
+	TotalQuantity int
 }
 
 // Limits on product fields, in characters (runes).
@@ -40,6 +45,13 @@ const (
 	maxDescriptionLen = 2000
 	maxCategoryLen    = 100
 )
+
+// The products.total_quantity column is a 32-bit integer.
+const maxTotalQuantity = math.MaxInt32
+
+// InitialStockReason is the reason recorded on the stock adjustment that
+// gives a new product its initial TotalQuantity.
+const InitialStockReason = "Initial stock"
 
 var (
 	ErrDuplicateSKU = errors.New("product with this SKU already exists")
@@ -68,8 +80,11 @@ type Actor struct {
 // ProductRepository is what product management needs from storage.
 type ProductRepository interface {
 	// CreateProduct stores p and returns the new product, or an error
-	// wrapping ErrDuplicateSKU if a product already has p.SKU.
-	CreateProduct(ctx context.Context, p NewProduct) (Product, error)
+	// wrapping ErrDuplicateSKU if a product already has p.SKU. If
+	// p.TotalQuantity is above 0 it also records, atomically with the
+	// product, a stock adjustment of that many units with reason
+	// InitialStockReason by the user actorID.
+	CreateProduct(ctx context.Context, actorID int64, p NewProduct) (Product, error)
 }
 
 // ProductService holds the product catalog's business logic.
@@ -93,7 +108,7 @@ func (s *ProductService) CreateProduct(ctx context.Context, actor Actor, p NewPr
 	if err != nil {
 		return Product{}, err
 	}
-	return s.repo.CreateProduct(ctx, p)
+	return s.repo.CreateProduct(ctx, actor.UserID, p)
 }
 
 // normalize trims p's name and category and checks every field except the
@@ -104,6 +119,9 @@ func (p NewProduct) normalize() (NewProduct, error) {
 
 	if p.Name == "" {
 		return NewProduct{}, &ValidationError{"name", "is required"}
+	}
+	if p.TotalQuantity < 0 || p.TotalQuantity > maxTotalQuantity {
+		return NewProduct{}, &ValidationError{"total_quantity", fmt.Sprintf("must be between 0 and %d", maxTotalQuantity)}
 	}
 	for _, f := range []struct {
 		name   string

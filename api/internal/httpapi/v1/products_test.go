@@ -118,6 +118,39 @@ func TestCreateProductCreated(t *testing.T) {
 				`"total_quantity":0,"active":true,` +
 				`"created_at":"2026-10-22T01:14:50.123456Z","updated_at":"2026-10-22T01:14:50.123456Z"}`,
 		},
+		{
+			name: "initial stock",
+			body: `{"sku":"123456","name":"Folding chair","total_quantity":120}`,
+			product: inventory.Product{
+				ID: 8, SKU: "123456", Name: "Folding chair", TotalQuantity: 120, Active: true, CreatedAt: created, UpdatedAt: created,
+			},
+			wantRequest: inventory.NewProduct{SKU: "123456", Name: "Folding chair", TotalQuantity: 120},
+			wantJSON: `{"id":8,"sku":"123456","name":"Folding chair","description":"","category":null,` +
+				`"total_quantity":120,"active":true,` +
+				`"created_at":"2026-10-22T01:14:50.123456Z","updated_at":"2026-10-22T01:14:50.123456Z"}`,
+		},
+		{
+			name: "zero initial stock",
+			body: `{"sku":"123456","name":"Folding chair","total_quantity":0}`,
+			product: inventory.Product{
+				ID: 9, SKU: "123456", Name: "Folding chair", Active: true, CreatedAt: created, UpdatedAt: created,
+			},
+			wantRequest: inventory.NewProduct{SKU: "123456", Name: "Folding chair"},
+			wantJSON: `{"id":9,"sku":"123456","name":"Folding chair","description":"","category":null,` +
+				`"total_quantity":0,"active":true,` +
+				`"created_at":"2026-10-22T01:14:50.123456Z","updated_at":"2026-10-22T01:14:50.123456Z"}`,
+		},
+		{
+			name: "null initial stock",
+			body: `{"sku":"123456","name":"Folding chair","total_quantity":null}`,
+			product: inventory.Product{
+				ID: 10, SKU: "123456", Name: "Folding chair", Active: true, CreatedAt: created, UpdatedAt: created,
+			},
+			wantRequest: inventory.NewProduct{SKU: "123456", Name: "Folding chair"},
+			wantJSON: `{"id":10,"sku":"123456","name":"Folding chair","description":"","category":null,` +
+				`"total_quantity":0,"active":true,` +
+				`"created_at":"2026-10-22T01:14:50.123456Z","updated_at":"2026-10-22T01:14:50.123456Z"}`,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -143,10 +176,11 @@ func TestCreateProductCreated(t *testing.T) {
 
 			attrs := eventAttrs(t, event)
 			want := map[string]slog.Value{
-				"user.id":         slog.Int64Value(1),
-				"product.sku":     slog.StringValue(string(tt.product.SKU)),
-				"product.id":      slog.Int64Value(tt.product.ID),
-				"product.outcome": slog.StringValue("created"),
+				"user.id":                slog.Int64Value(1),
+				"product.sku":            slog.StringValue(string(tt.product.SKU)),
+				"product.total_quantity": slog.IntValue(tt.product.TotalQuantity),
+				"product.id":             slog.Int64Value(tt.product.ID),
+				"product.outcome":        slog.StringValue("created"),
 			}
 			if len(attrs) != len(want) {
 				t.Errorf("event attrs = %v, want %v", attrs, want)
@@ -177,7 +211,10 @@ func TestCreateProductErrors(t *testing.T) {
 		{"empty body", &adminID, ``, nil, http.StatusBadRequest, "invalid request body", "invalid", false},
 		{"malformed JSON", &adminID, `{"sku":"123456",`, nil, http.StatusBadRequest, "invalid request body", "invalid", false},
 		{"not an object", &adminID, `["123456"]`, nil, http.StatusBadRequest, "invalid request body", "invalid", false},
-		{"unknown field", &adminID, `{"sku":"123456","name":"Pallet jack","total_quantity":10}`, nil, http.StatusBadRequest, "invalid request body", "invalid", false},
+		{"unknown field", &adminID, `{"sku":"123456","name":"Pallet jack","quantity":10}`, nil, http.StatusBadRequest, "invalid request body", "invalid", false},
+		{"total quantity wrong type", &adminID, `{"sku":"123456","name":"Pallet jack","total_quantity":"10"}`, nil, http.StatusBadRequest, "invalid request body", "invalid", false},
+		{"fractional total quantity", &adminID, `{"sku":"123456","name":"Pallet jack","total_quantity":1.5}`, nil, http.StatusBadRequest, "invalid request body", "invalid", false},
+		{"total quantity overflows", &adminID, `{"sku":"123456","name":"Pallet jack","total_quantity":1e30}`, nil, http.StatusBadRequest, "invalid request body", "invalid", false},
 		{"removed field", &adminID, `{"sku":"123456","name":"Pallet jack","reorder_threshold":5}`, nil, http.StatusBadRequest, "invalid request body", "invalid", false},
 		{"wrong type", &adminID, `{"sku":"123456","name":"Pallet jack","category":5}`, nil, http.StatusBadRequest, "invalid request body", "invalid", false},
 		{"second object", &adminID, valid + `{}`, nil, http.StatusBadRequest, "invalid request body", "invalid", false},
@@ -217,6 +254,9 @@ func TestCreateProductErrors(t *testing.T) {
 			if _, ok := attrs["product.sku"]; ok != tt.wantSKU {
 				t.Errorf("event has product.sku = %v, want %v", ok, tt.wantSKU)
 			}
+			if _, ok := attrs["product.total_quantity"]; ok {
+				t.Error("event has product.total_quantity for a failed request")
+			}
 			if got, ok := attrs["user.id"]; ok != (tt.id != nil) || (ok && got.Int64() != tt.id.UserID) {
 				t.Errorf("event user.id = %v (present %v), want the caller's id", got, ok)
 			}
@@ -239,8 +279,8 @@ func TestCreateProductDoesNotLeakInternalErrors(t *testing.T) {
 // product.
 type stubRepository struct{}
 
-func (stubRepository) CreateProduct(ctx context.Context, p inventory.NewProduct) (inventory.Product, error) {
-	return inventory.Product{ID: 1, SKU: p.SKU, Name: p.Name, Active: true}, nil
+func (stubRepository) CreateProduct(ctx context.Context, actorID int64, p inventory.NewProduct) (inventory.Product, error) {
+	return inventory.Product{ID: 1, SKU: p.SKU, Name: p.Name, TotalQuantity: p.TotalQuantity, Active: true}, nil
 }
 
 // TestCreateProductWithService runs the handler against the real
@@ -267,6 +307,10 @@ func TestCreateProductWithService(t *testing.T) {
 		{"long description", adminID, `{"sku":"123456","name":"x","description":"` + strings.Repeat("a", 2001) + `"}`, http.StatusBadRequest, "description must be at most 2000 characters"},
 		{"long category", adminID, `{"sku":"123456","name":"x","category":"` + strings.Repeat("a", 101) + `"}`, http.StatusBadRequest, "category must be at most 100 characters"},
 		{"NUL in name", adminID, `{"sku":"123456","name":"a\u0000b"}`, http.StatusBadRequest, "name must not contain NUL characters"},
+		{"largest total quantity", adminID, `{"sku":"123456","name":"x","total_quantity":2147483647}`, http.StatusCreated, ""},
+		{"negative total quantity", adminID, `{"sku":"123456","name":"x","total_quantity":-1}`, http.StatusBadRequest, "total_quantity must be between 0 and 2147483647"},
+		{"total quantity too large", adminID, `{"sku":"123456","name":"x","total_quantity":2147483648}`, http.StatusBadRequest, "total_quantity must be between 0 and 2147483647"},
+		{"requester with negative total quantity", requesterID, `{"sku":"123456","name":"x","total_quantity":-1}`, http.StatusForbidden, "admin role required"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

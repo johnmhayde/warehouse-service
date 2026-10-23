@@ -41,11 +41,11 @@ func TestCreateProduct(t *testing.T) {
 	s := New()
 	ctx := context.Background()
 
-	first, err := s.CreateProduct(ctx, inventory.NewProduct{SKU: "123456", Name: "Pallet jack", Category: "Handling"})
+	first, err := s.CreateProduct(ctx, 1, inventory.NewProduct{SKU: "123456", Name: "Pallet jack", Category: "Handling"})
 	if err != nil {
 		t.Fatalf("CreateProduct: %v", err)
 	}
-	second, err := s.CreateProduct(ctx, inventory.NewProduct{SKU: "654321", Name: "Shrink wrap"})
+	second, err := s.CreateProduct(ctx, 1, inventory.NewProduct{SKU: "654321", Name: "Shrink wrap"})
 	if err != nil {
 		t.Fatalf("CreateProduct: %v", err)
 	}
@@ -64,14 +64,26 @@ func TestCreateProduct(t *testing.T) {
 	}
 }
 
+func TestCreateProductInitialStock(t *testing.T) {
+	s := New()
+
+	got, err := s.CreateProduct(context.Background(), 1, inventory.NewProduct{SKU: "123456", Name: "Pallet jack", TotalQuantity: 12})
+	if err != nil {
+		t.Fatalf("CreateProduct: %v", err)
+	}
+	if got.TotalQuantity != 12 {
+		t.Errorf("TotalQuantity = %d, want 12", got.TotalQuantity)
+	}
+}
+
 func TestCreateProductDuplicateSKU(t *testing.T) {
 	s := New()
 	ctx := context.Background()
 
-	if _, err := s.CreateProduct(ctx, inventory.NewProduct{SKU: "123456", Name: "Pallet jack"}); err != nil {
+	if _, err := s.CreateProduct(ctx, 1, inventory.NewProduct{SKU: "123456", Name: "Pallet jack"}); err != nil {
 		t.Fatalf("first CreateProduct: %v", err)
 	}
-	_, err := s.CreateProduct(ctx, inventory.NewProduct{SKU: "123456", Name: "Another"})
+	_, err := s.CreateProduct(ctx, 1, inventory.NewProduct{SKU: "123456", Name: "Another"})
 	if !errors.Is(err, inventory.ErrDuplicateSKU) {
 		t.Errorf("CreateProduct error = %v, want ErrDuplicateSKU", err)
 	}

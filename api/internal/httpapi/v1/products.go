@@ -13,10 +13,11 @@ import (
 )
 
 type createProductRequest struct {
-	SKU         string `json:"sku"`
-	Name        string `json:"name"`
-	Description string `json:"description"`
-	Category    string `json:"category"`
+	SKU           string `json:"sku"`
+	Name          string `json:"name"`
+	Description   string `json:"description"`
+	Category      string `json:"category"`
+	TotalQuantity int    `json:"total_quantity"`
 }
 
 type productResponse struct {
@@ -25,7 +26,7 @@ type productResponse struct {
 	Name        string  `json:"name"`
 	Description string  `json:"description"`
 	Category    *string `json:"category"`
-	// TotalQuantity is stock on hand across the warehouse.
+	// TotalQuantity is the number of units the warehouse owns.
 	TotalQuantity int       `json:"total_quantity"`
 	Active        bool      `json:"active"`
 	CreatedAt     time.Time `json:"created_at"`
@@ -85,10 +86,11 @@ func (h *handler) createProduct(w http.ResponseWriter, r *http.Request) {
 	product, err := h.products.CreateProduct(ctx,
 		inventory.Actor{UserID: id.UserID, Admin: id.IsAdmin()},
 		inventory.NewProduct{
-			SKU:         sku,
-			Name:        req.Name,
-			Description: req.Description,
-			Category:    req.Category,
+			SKU:           sku,
+			Name:          req.Name,
+			Description:   req.Description,
+			Category:      req.Category,
+			TotalQuantity: req.TotalQuantity,
 		},
 	)
 	var invalid *inventory.ValidationError
@@ -114,7 +116,10 @@ func (h *handler) createProduct(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	telemetry.Add(ctx, slog.Int64("product.id", product.ID))
+	telemetry.Add(ctx,
+		slog.Int64("product.id", product.ID),
+		slog.Int("product.total_quantity", product.TotalQuantity),
+	)
 	addProductOutcome(ctx, "created")
 	writeJSON(w, http.StatusCreated, newProductResponse(product))
 }
