@@ -25,4 +25,4 @@ If the `code-reviewer` agent isn't available, run `docker compose run --rm test`
 
 - Never edit a merged migration in `api/migrations/`; add a new one.
 - A change that alters documented behavior updates the relevant doc in the same PR.
-- Breaking changes to `/api/v1` go in a new `httpapi/v2`, not in v1.
+- Breaking changes to `/api/v1` go in a new `httpapi/v2`, not in v1. Exception: until v1 has its first consumer (the web app or a deployed environment), breaking changes stay in v1 and column drops don't need an expand/contract split ([ADR 0003](docs/adr/0003-rental-model-and-reservation-visibility.md), decision 8).
